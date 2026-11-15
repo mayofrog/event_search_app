@@ -292,8 +292,7 @@
   .categoryOption:active { transform: scale(.97); }
   .categoryHint { margin-top: 8px; color: var(--muted); font-size: 12px; }
   .detailCategoryGroup { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 3px; }
-  .detailCategory { border: 1px solid rgba(255,255,255,.5); background: rgba(255,255,255,.22);
-                    padding: 7px 11px; border-radius: 99px; font-size: 12px; font-weight: 700; }
+  .detailCategoryGroup .chip { display: inline-flex; align-items: center; line-height: 1.4; }
   .postModeNotice { background: rgba(101,84,217,.12); border-radius: 13px; padding: 12px;
                     display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .postModeNotice[hidden] { display: none; }
@@ -448,7 +447,28 @@ async function apiRequest(path, options = {}) {
 }
 
 const store = {
-  events: [], seen: [], interested: [], mine: [], mapEvents: [],
+  events: [], seen: [], interested: [], mine: [], mapEvents: [], categoryScores: {}, swipeChoices: {},
+  setRecommendationData(recommendations) {
+    this.categoryScores = recommendations.scores || {};
+    this.swipeChoices = Object.fromEntries((recommendations.swipes || []).map(swipe => [swipe.eventId, swipe]));
+    this.seen = [...new Set([...this.seen, ...Object.keys(this.swipeChoices)])];
+  },
+  applySwipe(id, event, choice) {
+    const previous = this.swipeChoices[id];
+    const directions = { left: -1, right: 1, cancelled: 0 };
+    const update = (categories, direction) => {
+      for (const category of new Set(categories || [])) {
+        this.categoryScores[category] = (this.categoryScores[category] || 0) + direction;
+        if (!this.categoryScores[category]) delete this.categoryScores[category];
+      }
+    };
+    if (previous) update(previous.categories, -(directions[previous.choice] || 0));
+    if (choice) {
+      const categories = choice === "cancelled" ? [] : eventCategories(event);
+      this.swipeChoices[id] = { eventId: id, choice, categories };
+      update(categories, directions[choice] || 0);
+    } else delete this.swipeChoices[id];
+  },
   localKey(field) { return "eventswipe." + sessionUser.id + "." + field + ".v3"; },
   async load() {
     for (const field of ["seen", "interested"]) {
@@ -457,16 +477,19 @@ const store = {
       if (!Array.isArray(this[field])) this[field] = [];
     }
     const previousLikes = [...new Set(this.interested)];
-    const [feed, mine, interests] = await Promise.all([
-      apiRequest("/api/events"), apiRequest("/api/events/mine"), apiRequest("/api/interests/mine")
+    const [feed, mine, interests, recommendations] = await Promise.all([
+      apiRequest("/api/events"), apiRequest("/api/events/mine"), apiRequest("/api/interests/mine"),
+      apiRequest("/api/recommendations/me")
     ]);
     this.events = feed;
     this.mine = mine;
     this.interested = interests.eventIds || [];
+    this.setRecommendationData(recommendations);
     this.mapEvents = [];
     // Import older browser-only Likes once. After migration, the server is the source of truth.
     const migratedKey = this.localKey("serverInterestMigration");
     if (localStorage.getItem(migratedKey) !== "done") {
+      let migratedAny = false;
       const availableIds = new Set(feed.map(event => event.id));
       let complete = true;
       for (const id of previousLikes) {
@@ -475,23 +498,29 @@ const store = {
           const result = await apiRequest("/api/events/" + encodeURIComponent(id) + "/interest", { method: "PUT" });
           this.interested.push(id);
           this.updateCount(id, result.interestCount);
+          const event = feed.find(item => item.id === id);
+          if (event) this.applySwipe(id, event, "right");
+          migratedAny = true;
         } catch (error) {
           complete = false;
           console.warn("Could not import a previous interest:", error);
         }
       }
       if (complete) localStorage.setItem(migratedKey, "done");
+      if (migratedAny) this.setRecommendationData(await apiRequest("/api/recommendations/me"));
     }
     this.seen = [...new Set([...this.seen, ...this.interested])];
     this.save();
   },
   async refreshCounts() {
-    const [feed, mine, interests] = await Promise.all([
-      apiRequest("/api/events"), apiRequest("/api/events/mine"), apiRequest("/api/interests/mine")
+    const [feed, mine, interests, recommendations] = await Promise.all([
+      apiRequest("/api/events"), apiRequest("/api/events/mine"), apiRequest("/api/interests/mine"),
+      apiRequest("/api/recommendations/me")
     ]);
     this.events = feed;
     this.mine = mine;
     this.interested = interests.eventIds || [];
+    this.setRecommendationData(recommendations);
     this.save();
   },
   updateCount(id, value) {
@@ -512,18 +541,44 @@ const store = {
     return this.events
       .filter(e => !this.seen.includes(e.id) && e.date > Date.now())
       .filter(e => !q || [e.title, e.location, e.details, ...eventCategories(e)].join(" ").toLowerCase().includes(q))
-      .sort((a, b) => a.date - b.date);
+      .sort((a, b) => {
+        const score = event => {
+          const cats = eventCategories(event);
+          return cats.length ? cats.reduce((sum, cat) => sum + (this.categoryScores[cat] || 0), 0) / cats.length : 0;
+        };
+        if (a.id === restoredEventId) return -1;
+        if (b.id === restoredEventId) return 1;
+        return score(b) - score(a) || a.date - b.date || String(a.id).localeCompare(String(b.id));
+      });
   },
   async addInterest(id) {
     const result = await apiRequest("/api/events/" + encodeURIComponent(id) + "/interest", { method: "PUT" });
     if (!this.interested.includes(id)) this.interested.push(id);
     this.updateCount(id, result.interestCount);
+    const event = this.events.find(item => item.id === id);
+    if (event) this.applySwipe(id, event, "right");
     this.markSeen(id);
     return result;
+  },
+  async pass(id) {
+    const event = this.events.find(item => item.id === id);
+    if (!event) throw new Error("Event not found.");
+    await apiRequest("/api/events/" + encodeURIComponent(id) + "/pass", { method: "POST" });
+    this.applySwipe(id, event, "left");
+    this.markSeen(id);
+  },
+  async undoPass(id) {
+    const result = await apiRequest("/api/events/" + encodeURIComponent(id) + "/pass", { method: "DELETE" });
+    if (!result.undone) throw new Error("This Pass can no longer be undone.");
+    this.applySwipe(id, this.events.find(item => item.id === id), null);
+    this.seen = this.seen.filter(eventId => eventId !== id);
+    this.save();
   },
   async cancelInterest(id) {
     const result = await apiRequest("/api/events/" + encodeURIComponent(id) + "/interest", { method: "DELETE" });
     this.interested = this.interested.filter(x => x !== id);
+    const event = this.events.find(item => item.id === id);
+    if (event) this.applySwipe(id, event, "cancelled");
     this.updateCount(id, result.interestCount);
     this.save();
     return result;
@@ -636,6 +691,7 @@ function makeCard(ev) {
 
 let topCard = null, topEvent = null, busy = false, moved = false, query = "";
 let lastPassedEventId = null;
+let restoredEventId = null;
 
 function updateUndoButton() {
   const active = document.querySelector("section.active")?.id;
@@ -646,16 +702,21 @@ function updateUndoButton() {
   $("undoSwipeBtn").hidden = !available;
 }
 
-$("undoSwipeBtn").onclick = () => {
+$("undoSwipeBtn").onclick = async () => {
   if (busy || !lastPassedEventId) return;
   const id = lastPassedEventId;
   if (!store.seen.includes(id) || store.interested.includes(id)) return;
-  store.seen = store.seen.filter(seenId => seenId !== id);
-  store.save();
-  lastPassedEventId = null;
-  render();
-  if ($("details").classList.contains("active") && !previewEvent) renderDetails();
+  busy = true;
   updateUndoButton();
+  try {
+    await store.undoPass(id);
+    lastPassedEventId = null;
+    restoredEventId = id;
+    query = ""; $("searchBox").value = "";
+    render();
+    if ($("details").classList.contains("active") && !previewEvent) renderDetails();
+  } catch (error) { toast(document.createTextNode(error.message)); }
+  finally { busy = false; updateUndoButton(); }
 };
 
 function render() {
@@ -718,6 +779,7 @@ function swipe(right, source = "feed") {
   if (busy || !topEvent || (source === "details" && (previewEvent || !$("details").classList.contains("active")))) return;
   busy = true;
   moved = true;
+  restoredEventId = null;
   if (right) lastPassedEventId = null;
   updateUndoButton();
   const ev = topEvent, card = topCard;
@@ -743,11 +805,11 @@ function swipe(right, source = "feed") {
     try {
       if (right) await store.addInterest(ev.id);
       else {
-        store.markSeen(ev.id);
+        await store.pass(ev.id);
         lastPassedEventId = ev.id;
       }
     } catch (error) {
-      toast(document.createTextNode("Couldn't save interest: " + error.message));
+      toast(document.createTextNode("Couldn't save your swipe: " + error.message));
     } finally {
       render();
       if (source === "details") {
@@ -830,10 +892,12 @@ function renderDetails() {
     row("Location", ev.location));
   const categories = eventCategories(ev);
   if (categories.length) {
-    d.append(el("div", "row", "Categories"));
+    const categoryRow = el("div", "row");
+    categoryRow.append(el("span", "k", "Categories"));
     const group = el("div", "detailCategoryGroup");
-    categories.forEach(category => group.append(el("span", "detailCategory", category)));
-    d.append(group);
+    categories.forEach(category => group.append(el("span", "chip", category.toUpperCase())));
+    categoryRow.append(group);
+    d.append(categoryRow);
   }
   if (ev.details.trim()) d.append(row("Description", ev.details, true));
   if (ev.price != null && Number.isFinite(+ev.price)) d.append(row("Ticket price", money(ev.price)));
@@ -1024,8 +1088,10 @@ function renderAccount() {
       await apiRequest("/api/auth/logout", { method: "POST" });
       sessionUser = null;
       lastPassedEventId = null;
+      restoredEventId = null;
       updateUndoButton();
       store.events = []; store.mine = []; store.mapEvents = []; store.seen = []; store.interested = [];
+      store.categoryScores = {}; store.swipeChoices = {};
       query = ""; $("searchBox").value = ""; closeSearch(true);
       document.body.classList.remove("authenticated");
       showAuth();
@@ -1042,9 +1108,6 @@ function renderAccount() {
   if (!interested.length) a.append(el("p", "", "No interested events yet."));
   for (const e of interested) {
     const row = el("div", "mgRow"), info = el("span", "", e.title + " · " + new Date(e.date).toLocaleDateString());
-    const link = el("a", "", "Website ↗");
-    const url = safeEventUrl(e.link);
-    if (url) { link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer"; }
     const details = el("button", "", "Details"); details.type = "button";
     details.onclick = () => { previewEvent = e; showTab("details"); };
     const cancel = el("button", "delete", "Cancel"); cancel.type = "button";
@@ -1054,7 +1117,7 @@ function renderAccount() {
       try { await store.cancelInterest(e.id); renderAccount(); }
       catch (error) { cancel.disabled = false; toast(document.createTextNode(error.message)); }
     };
-    row.append(info, details); if (url) row.append(link);
+    row.append(info, details);
     row.append(cancel); a.append(row);
   }
 
@@ -1371,6 +1434,7 @@ function showAuth() {
 }
 async function finishAuth(user) {
   lastPassedEventId = null;
+  restoredEventId = null;
   sessionUser = user;
   const oldKey = localStorage.getItem(OWNER_STORAGE_KEY);
   if (oldKey) {
