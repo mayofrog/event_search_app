@@ -1,0 +1,1406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>EventSwipe</title>
+<link href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<style>
+  :root { color-scheme: light dark; --bg:#f2f2f7; --fg:#111; --muted:#6b6b76; --field:#fff; --line:#d4d4dc; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0e0e12; --fg:#f2f2f7; --muted:#9a9aa6; --field:#1c1c22; --line:#33333b; } }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 16px/1.4 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg);
+         display: flex; flex-direction: column; overflow: hidden; position: relative; }
+  nav { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 22px); left: 50%; transform: translateX(-50%); z-index: 5; display: flex; gap: 28px; }
+  nav button { padding: 0; border: 0; background: none; font: inherit; font-size: 22px; cursor: pointer;
+               color: rgba(20,20,30,.55); font-weight: 500; text-shadow: 0 0 8px rgba(255,255,255,.55); }
+  nav button[aria-selected="true"] { color: #fff; font-weight: 800; text-shadow: 0 1px 6px rgba(0,0,0,.4); }
+  /* A single-step Undo for the most recent left swipe. */
+  #undoSwipeBtn { position: fixed; z-index: 12; top: calc(env(safe-area-inset-top, 0px) + 14px); right: 15px;
+                  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+                  min-width: 73px; height: 39px; padding: 0 12px; border-radius: 999px;
+                  border: 1px solid rgba(255,255,255,.32); background: rgba(16,18,28,.70);
+                  color: #fff; font: inherit; font-size: 13px; font-weight: 750; cursor: pointer;
+                  box-shadow: 0 4px 18px rgba(0,0,0,.25); backdrop-filter: blur(14px);
+                  -webkit-backdrop-filter: blur(14px); text-shadow: 0 1px 4px rgba(0,0,0,.35);
+                  animation: undoButtonIn .25s cubic-bezier(.16,1.5,.38,1) both; }
+  #undoSwipeBtn svg { width: 18px; height: 18px; fill: none; stroke: currentColor;
+                      stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+  #undoSwipeBtn:active { transform: scale(.94); }
+  #undoSwipeBtn:focus-visible { outline: 2px solid #c8bdff; outline-offset: 3px; }
+  #undoSwipeBtn[hidden], body:not(.authenticated) #undoSwipeBtn { display: none; }
+  @keyframes undoButtonIn { from { opacity: 0; transform: translateY(-8px) scale(.82); }
+                           to { opacity: 1; transform: translateY(0) scale(1); } }
+  @media (prefers-reduced-motion: reduce) { #undoSwipeBtn { animation: none; } }
+
+  body.on-sub nav { display: none; }
+  /* One persistent bottom dock shared by every tab. */
+  .bar { position: fixed; left: 50%; transform: translateX(-50%); width: min(calc(100% - 24px), 460px);
+         bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); height: 70px; z-index: 15;
+         display: flex; align-items: center; justify-content: space-around; gap: 2px; padding: 6px 7px;
+         border-radius: 22px; border: 1px solid rgba(255,255,255,.14);
+         background: rgba(19,20,30,.88); box-shadow: 0 10px 36px rgba(0,0,0,.28);
+         backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px); }
+  body:not(.authenticated) > .bar { display: none; }
+  .bar button { position: relative; flex: 1 1 0; min-width: 0; height: 56px; border: 0;
+                background: none; color: #fff; opacity: .63; display: grid; place-items: center;
+                cursor: pointer; padding: 0; -webkit-tap-highlight-color: transparent;
+                transition: opacity .2s ease, transform .22s cubic-bezier(.2,1.5,.45,1); }
+  .bar button.current { opacity: 1; }
+  .bar button.current svg { stroke-width: 2.8; }
+  .bar button:active { transform: scale(.83); }
+  .bar button:focus-visible { outline: 2px solid #b8abff; outline-offset: -2px; border-radius: 14px; }
+  .bar button.current::after { content: ''; position: absolute; bottom: 0; left: 50%; width: 5px;
+                                height: 5px; border-radius: 50%; background: #fff; transform: translateX(-50%); }
+  .bar button.tab-pop svg { animation: navIconPop .32s cubic-bezier(.2,1.5,.4,1) both; }
+  .bar svg { width: 32px; height: 32px; transition: stroke-width .2s; }
+  @keyframes navIconPop { 0% { transform: scale(.72); } 60% { transform: scale(1.13); } 100% { transform: scale(1); } }
+  @media (prefers-reduced-motion: reduce) { .bar button, .bar svg { transition: none; } .bar button.tab-pop svg { animation: none; } }
+  /* Search opens as a centered, expanding sheet instead of a small field at the top. */
+  #searchOverlay { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center;
+                   padding: max(20px, env(safe-area-inset-top, 0px)) 20px max(20px, env(safe-area-inset-bottom, 0px));
+                   background: rgba(10,10,20,.58); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+                   animation: searchBackdropIn .28s ease both; }
+  #searchOverlay[hidden] { display: none; }
+  .searchPanel { width: min(100%, 440px); max-height: min(80dvh, 680px); display: flex; flex-direction: column;
+                 gap: 15px; overflow: hidden; color: var(--fg); background: var(--field); border: 1px solid var(--line);
+                 border-radius: 26px; padding: 24px; box-shadow: 0 25px 90px rgba(0,0,0,.35);
+                 animation: searchZoomIn .43s cubic-bezier(.19, 1.18, .35, 1) both; }
+  .searchHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .searchHeading h2 { margin: 0 0 4px; font-size: 27px; letter-spacing: -.035em; }
+  .searchHeading p { margin: 0; color: var(--muted); font-size: 14px; }
+  .searchClose { border: none; border-radius: 99px; width: 36px; height: 36px; background: rgba(127,127,127,.12);
+                 color: var(--fg); font: inherit; font-size: 23px; cursor: pointer; flex-shrink: 0; }
+  .searchField { display: flex; align-items: center; gap: 10px; padding: 0 14px; border-radius: 15px;
+                 border: 2px solid transparent; background: rgba(127,127,127,.13); transition: border-color .18s, box-shadow .18s; }
+  .searchField:focus-within { border-color: #7966ec; box-shadow: 0 0 0 4px rgba(121,102,236,.12); }
+  .searchField svg { width: 22px; height: 22px; opacity: .55; flex-shrink: 0; }
+  #searchBox { width: 100%; border: none; outline: none; padding: 16px 0; background: none; color: var(--fg);
+               font: inherit; min-width: 0; box-shadow: none; }
+  .searchSummary { color: var(--muted); font-size: 13px; font-weight: 600; }
+  #searchMatches { display: grid; gap: 8px; min-height: 0; overflow-y: auto; }
+  .searchResult { width: 100%; text-align: left; display: grid; gap: 4px; border: none; border-radius: 13px;
+                  background: rgba(127,127,127,.1); color: var(--fg); padding: 12px 14px; cursor: pointer; font: inherit; }
+  .searchResult:active { transform: scale(.98); }
+  .searchResult strong { font-size: 14px; overflow-wrap: anywhere; }
+  .searchResult span { font-size: 12px; color: var(--muted); }
+  #searchApply { border: none; padding: 14px; color: #fff; background: #6252d9; font: inherit;
+                 font-weight: 700; border-radius: 14px; cursor: pointer; }
+  #searchOverlay.closing { animation: searchBackdropOut .18s ease forwards; pointer-events: none; }
+  #searchOverlay.closing .searchPanel { animation: searchZoomOut .18s ease forwards; }
+  #searchBtn:active svg { transform: scale(.88) rotate(-9deg); }
+  #searchBtn svg { transition: transform .2s ease; }
+  @keyframes searchBackdropIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes searchBackdropOut { to { opacity: 0; } }
+  @keyframes searchZoomIn { from { opacity: 0; transform: translateY(12px) scale(.69); filter: blur(7px); }
+                             to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); } }
+  @keyframes searchZoomOut { to { opacity: 0; transform: translateY(8px) scale(.88); } }
+  body:not(.authenticated) #searchOverlay { display: none !important; }
+
+  #map { position: absolute; padding: 0; }
+  #gmap { position: absolute; inset: 0; }
+  #mapStatus { position: absolute; z-index: 5; left: 14px; bottom: calc(env(safe-area-inset-bottom, 0px) + 98px); max-width: calc(100% - 28px);
+               padding: 10px 14px; background: #fff; color: #111; border-radius: 13px; box-shadow: 0 2px 12px rgba(0,0,0,.22);
+               font-size: 13px; font-weight: 600; pointer-events: none; }
+  .maplibregl-popup-content { border-radius: 12px; padding: 12px 14px; }
+  .maplibregl-popup-content a { color: #4f46e5; font-weight: 650; }
+  .maplibregl-popup-content p { margin: 0 0 8px; }
+  .maplibregl-popup-content p:last-child { margin-bottom: 0; }
+  .mapBack { position: absolute; z-index: 6; top: calc(env(safe-area-inset-top, 0px) + 12px); left: 12px; padding: 8px 14px; border: 0;
+             border-radius: 99px; background: #fff; color: #111; font: inherit; font-weight: 600; box-shadow: 0 2px 10px rgba(0,0,0,.3); cursor: pointer; }
+  #mapFallback { position: absolute; inset: 0; z-index: 3; overflow-y: auto; background: var(--bg); display: grid; gap: 14px; align-content: start;
+                 padding: calc(env(safe-area-inset-top, 0px) + 64px) 20px calc(env(safe-area-inset-bottom, 0px) + 116px); }
+  #mapFallback[hidden] { display: none; }
+  #mapFallback h2 { margin: 0; } #mapFallback p { margin: 0; color: var(--muted); }
+  #mapFallback .keyrow { display: flex; gap: 8px; } #mapFallback .keyrow input { flex: 1; }
+  #mapFallback button { padding: 10px 16px; border: 0; border-radius: 10px; background: #4f46e5; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+  .mapEv { background: var(--field); border-radius: 12px; padding: 12px 14px; display: grid; gap: 2px; }
+  .mapEv a { color: #4f46e5; font-weight: 600; }
+  #acct { display: grid; gap: 14px; align-content: start; overflow-y: auto; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 104px); }
+  .mgRow { display: flex; align-items: center; gap: 10px; background: var(--field); border-radius: 12px; padding: 10px 12px; }
+  .mgRow span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  #acct .mgRow button { padding: 8px 12px; background: #4f46e5; }
+  #acct .mgRow a { font-size: 13px; color: #4f46e5; white-space: nowrap; }
+  #acct .mgRow button { font-size: 12px; white-space: nowrap; }
+  #acct .mgRow button.delete { background: #dc2626; }
+  #acct h2 { margin: 0; } #acct p { margin: 0; color: var(--muted); } #acct .stat { font-size: 18px; font-weight: 600; }
+  #acct button { padding: 14px; border: 0; border-radius: 12px; background: #4f46e5; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+  #dbg { position: absolute; inset: 0; z-index: 0; overflow: hidden; background-size: cover; background-position: center;
+         display: grid; place-items: start center; filter: blur(18px) brightness(.5); transform: scale(1.15); }
+  #dbg.plain { filter: none; transform: none; }
+  #dcard { position: relative; z-index: 1; text-shadow: 0 1px 8px rgba(0,0,0,.45); flex: 1; min-height: 0; border-radius: 0; padding: calc(env(safe-area-inset-top, 0px) + 84px) 24px calc(env(safe-area-inset-bottom, 0px) + 112px); color: #fff; display: flex;
+           flex-direction: column; gap: 16px; overflow-y: auto; }
+  #dcard h2 { margin: 0; font-size: clamp(26px, 8vw, 36px); line-height: 1.1; font-weight: 800; overflow-wrap: anywhere; }
+  #details { touch-action: pan-y; }
+  .detailSwipeStamp { position: absolute; z-index: 6; top: calc(env(safe-area-inset-top, 0px) + 160px); }
+  .detailSwipeStamp.pass { right: 24px; }
+  .detailSwipeStamp.open { left: 24px; }
+  .row { display: grid; gap: 2px; }
+  .row .k { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; opacity: .8; }
+  .row .v { font-size: 18px; font-weight: 700; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .row .v.plain { font-weight: 500; font-size: 16px; }
+  .eventLink { margin-top: auto; padding: 14px; border: 0; border-radius: 12px; background: #fff; color: #111; font: inherit;
+          font-weight: 700; cursor: pointer; }
+  .eventLink:disabled { opacity: .6; cursor: not-allowed; }
+  .back { align-self: flex-start; border: 0; background: none; color: var(--fg); font: inherit; font-weight: 600; padding: 4px 0 8px; cursor: pointer; }
+  #backBtn, #acctBack, #mapBack { display: none; }
+  section { position: absolute; inset: 0; flex: 1; min-height: 0; display: none; flex-direction: column;
+            padding: calc(env(safe-area-inset-top, 0px) + 12px) 16px calc(env(safe-area-inset-bottom, 0px) + 16px); }
+  #feed, #details { padding: 0; }
+  section.active { display: flex; z-index: 2; }
+  section.leaving { display: flex; z-index: 1; pointer-events: none; }
+  section.enter-from-right, section.enter-from-left, section.exit-to-right, section.exit-to-left {
+    will-change: transform, opacity; backface-visibility: hidden; }
+  section.enter-from-right { animation: pageFromRight .38s cubic-bezier(.22,1,.36,1) both; }
+  section.enter-from-left { animation: pageFromLeft .38s cubic-bezier(.22,1,.36,1) both; }
+  section.exit-to-left { animation: pageExitLeft .38s cubic-bezier(.22,1,.36,1) both; }
+  section.exit-to-right { animation: pageExitRight .38s cubic-bezier(.22,1,.36,1) both; }
+  @keyframes pageFromRight { from { transform: translate3d(100%,0,0); opacity: .95; } to { transform: translate3d(0,0,0); opacity: 1; } }
+  @keyframes pageFromLeft { from { transform: translate3d(-100%,0,0); opacity: .95; } to { transform: translate3d(0,0,0); opacity: 1; } }
+  @keyframes pageExitLeft { from { transform: translate3d(0,0,0); opacity: 1; } to { transform: translate3d(-28%,0,0); opacity: .75; } }
+  @keyframes pageExitRight { from { transform: translate3d(0,0,0); opacity: 1; } to { transform: translate3d(28%,0,0); opacity: .75; } }
+  @media (prefers-reduced-motion: reduce) {
+    section.enter-from-right, section.enter-from-left, section.exit-to-right, section.exit-to-left,
+    #searchOverlay, #searchOverlay .searchPanel, #searchOverlay.closing, #searchOverlay.closing .searchPanel { animation: none !important; }
+  }
+
+  #stack { position: relative; flex: 1; min-height: 0; touch-action: none; }
+  .card { position: absolute; inset: 0; isolation: isolate; background: #222; text-shadow: 0 1px 8px rgba(0,0,0,.45); border-radius: 0; padding: calc(env(safe-area-inset-top, 0px) + 24px) 24px calc(env(safe-area-inset-bottom, 0px) + 118px); color: #fff; display: flex; flex-direction: column;
+          gap: 10px; user-select: none; -webkit-user-select: none; overflow: hidden; }
+  .card.top { cursor: grab; touch-action: none; }
+  .card.back { transform: scale(.95); opacity: .6; transition: transform .25s, opacity .25s; }
+  .card.fly { transition: transform .28s ease-out; }
+  .card.snap { transition: transform .3s cubic-bezier(.3,1.6,.5,1); }
+  .layers { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
+  .bg { position: absolute; inset: 0; background-size: cover; background-position: center; display: grid; place-items: start center; }
+  .blur { position: absolute; inset: 0; -webkit-backdrop-filter: blur(var(--b)); backdrop-filter: blur(var(--b));
+          -webkit-mask-image: linear-gradient(to bottom, transparent var(--s), #000 var(--e));
+          mask-image: linear-gradient(to bottom, transparent var(--s), #000 var(--e)); }
+  .b1 { --b: 3px;  --s: 28%; --e: 48%; }
+  .b2 { --b: 8px;  --s: 38%; --e: 62%; }
+  .b3 { --b: 18px; --s: 50%; --e: 78%; }
+  .b4 { --b: 32px; --s: 62%; --e: 94%; }
+  .scrim { position: absolute; inset: 0; background: linear-gradient(to bottom, transparent 40%, rgba(0,0,0,.5) 100%); }
+  .content { position: relative; z-index: 1; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+  .card.plain { text-shadow: none; }
+  .card.plain .blur, .card.plain .scrim { display: none; }
+  #photoPrev { width: 100%; max-height: 160px; object-fit: cover; border-radius: 10px; }
+  .chip { align-self: flex-start; font-size: 12px; font-weight: 700; letter-spacing: .04em; padding: 5px 10px;
+          border-radius: 99px; background: rgba(255,255,255,.25); }
+  .eventBadgeRow { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+  .interestStreak { display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+                    padding: 5px 11px; border-radius: 99px; border: 1px solid rgba(255,165,70,.45);
+                    background: rgba(104,42,11,.62); color: #fff; font-size: 12px;
+                    font-weight: 800; letter-spacing: .01em; line-height: 1.2;
+                    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); text-shadow: none; }
+  .interestStreak .flame { font-size: 16px; line-height: 1; }
+  .postInterest { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; white-space: nowrap;
+                  padding: 6px 9px; border-radius: 99px; font-size: 12px; font-weight: 700;
+                  color: #9a4416; background: #ffedd5; }
+  .mgRow { flex-wrap: wrap; }
+  .mgRow > span { flex: 1 1 150px; }
+  @media (prefers-color-scheme: dark) { .postInterest { color: #ffbc85; background: #4a2818; } }
+  .dateRow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .countdown { display: inline-flex; align-items: center; font-size: 12px; font-weight: 700;
+               letter-spacing: .02em; padding: 5px 10px; border-radius: 99px;
+               color: #fff; background: rgba(255,255,255,.25); line-height: 1.2; }
+  .countdown.urgent { background: #dc2626; color: #fff; }
+  .spacer { flex: 1; }
+  .card h2 { margin: 0; font-size: clamp(26px, 8vw, 36px); line-height: 1.1; font-weight: 800; overflow-wrap: anywhere; }
+  .meta { font-weight: 600; }
+  .desc { opacity: .95; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+  .stamp { position: absolute; z-index: 2; top: calc(env(safe-area-inset-top, 0px) + 154px); }
+  .stamp.skip { right: 24px; } .stamp.open { left: 24px; }
+  .swipeFeedback { --feedback-color: #35edaa; --feedback-glow: rgba(53,237,170,.4);
+    display: grid; place-items: center; width: 82px; height: 82px; border-radius: 50%;
+    background: rgba(10, 16, 22, .55); color: var(--feedback-color);
+    border: 3px solid var(--feedback-color); box-shadow: inset 0 0 16px rgba(255,255,255,.06), 0 8px 24px rgba(0,0,0,.3), 0 0 30px var(--feedback-glow);
+    -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+    opacity: 0; transform: scale(.72); pointer-events: none; user-select: none;
+    transition: opacity .08s linear, transform .11s cubic-bezier(.2,.7,.2,1);
+    will-change: opacity, transform; }
+  .swipeFeedback.pass, .swipeFeedback.skip { --feedback-color: #ff596b; --feedback-glow: rgba(255,89,107,.4); }
+  .swipeFeedback svg { display: block; width: 47px; height: 47px; overflow: visible; fill: none;
+    stroke: currentColor; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round;
+    filter: drop-shadow(0 0 4px var(--feedback-glow)); }
+  .swipeFeedback::after { content: ''; position: absolute; inset: -11px; border: 2px solid var(--feedback-color);
+    border-radius: 50%; opacity: 0; pointer-events: none; }
+  .swipeFeedback.committed svg { animation: iconConfirm .3s cubic-bezier(.2,1.9,.3,1) both; }
+  .swipeFeedback.committed::after { animation: haloConfirm .35s ease-out both; }
+  @keyframes iconConfirm { 0% { transform: scale(.78); } 65% { transform: scale(1.2); } 100% { transform: scale(1); } }
+  @keyframes haloConfirm { 0% { opacity: .9; transform: scale(.7); } 100% { opacity: 0; transform: scale(1.35); } }
+  @media (prefers-reduced-motion: reduce) {
+    .swipeFeedback { transition: none; }
+    .swipeFeedback.committed svg, .swipeFeedback.committed::after { animation: none; }
+  }
+
+  #empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; color: #fff; padding: 24px;
+           background: linear-gradient(135deg, #9ca3af, #4b5563); }
+  #empty h2 { margin: 8px 0; }
+
+  form { flex: 1; min-height: 0; overflow-y: auto; align-content: start; display: grid; gap: 16px; padding: 8px 0 calc(env(safe-area-inset-bottom, 0px) + 112px); }
+  label { display: grid; gap: 6px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  input, select, textarea { font: 16px inherit; font-family: inherit; padding: 12px; border-radius: 10px; border: 1px solid var(--line);
+                            background: var(--field); color: var(--fg); width: 100%; text-transform: none; letter-spacing: 0; font-weight: 400; }
+  textarea { min-height: 110px; resize: vertical; }
+  .err { color: #dc2626; font-size: 12px; text-transform: none; letter-spacing: 0; font-weight: 400; min-height: 1em; }
+  form > button { padding: 14px; border: 0; border-radius: 12px; background: #4f46e5; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+  form > button:disabled { opacity: .45; cursor: not-allowed; }
+  #toast { position: fixed; z-index: 20; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 88px); transform: translateX(-50%); background: #111; color: #fff; padding: 10px 16px;
+           border-radius: 10px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; text-align: center; }
+  #toast.show { opacity: 1; pointer-events: auto; } #toast a { color: #a5b4fc; }
+  #authGate { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; overflow-y: auto; padding: 24px;
+              background: linear-gradient(145deg, #161630, #413b86 64%, #866de1); color: #fff; }
+  #authGate.hidden { display: none; }
+  .authPanel { width: min(100%, 420px); padding: 28px 24px; border-radius: 22px; background: rgba(255,255,255,.12);
+               box-shadow: 0 22px 70px rgba(0,0,0,.28); backdrop-filter: blur(16px); }
+  .authPanel h1 { font-size: 34px; margin: 0 0 8px; letter-spacing: -.05em; }
+  .authPanel p { margin: 0 0 24px; opacity: .85; }
+  .authPanel form { display: grid; gap: 14px; padding: 0; overflow: visible; }
+  .authPanel label { color: #fff; }
+  .authPanel input { color: #111; background: #fff; }
+  .authPanel form > button { margin-top: 8px; background: #fff; color: #25205c; }
+  .authPanel .authSwitch { background: none; color: #fff; border: none; text-decoration: underline; font: inherit;
+                            margin-top: 12px; padding: 8px; cursor: pointer; width: 100%; }
+  .authPanel .authError { color: #fff1ac; font-size: 14px; min-height: 18px; }
+  #authConfirmRow[hidden] { display: none; }
+  body:not(.authenticated) > nav, body:not(.authenticated) > section, body:not(.authenticated) > #toast { visibility: hidden; }
+  #previewBack { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 20px); left: 18px; z-index: 6;
+                 background: rgba(255,255,255,.92); color: #111; border: 0; border-radius: 22px;
+                 padding: 8px 14px; font: inherit; font-weight: 650; cursor: pointer; }
+  #previewBack[hidden] { display: none; }
+  body.previewing nav { display: none; }
+  .previewNote { font-size: 12px; font-weight: 650; opacity: .8; }
+
+  /* Compact multi-category chips, using the existing purple visual language. */
+  .categoryPicker { border: 1px solid var(--line); border-radius: 14px; padding: 13px; min-width: 0; }
+  .categoryPicker legend { padding: 0 7px; font-size: 13px; font-weight: 700; }
+  .categorySub { font-size: 11px; font-weight: 500; color: var(--muted); }
+  .categoryList { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+                  max-height: 266px; overflow-y: auto; padding: 4px 2px; }
+  .categoryOption { display: flex; align-items: center; justify-content: center; gap: 6px; text-align: center;
+                    background: var(--field); border: 1px solid var(--line); border-radius: 12px;
+                    padding: 10px 8px; font-size: 12px; font-weight: 650; color: var(--fg); cursor: pointer;
+                    letter-spacing: 0; text-transform: none; line-height: 1.25; min-height: 46px;
+                    transition: background .16s, border-color .16s, transform .16s; }
+  .categoryOption input { position: absolute; opacity: 0; width: 1px; height: 1px; padding: 0; }
+  .categoryOption:focus-within { outline: 2px solid #a392fa; outline-offset: 2px; }
+  .categoryOption.chosen { color: #fff; border-color: #6554d9; background: #6554d9; }
+  .categoryOption.primary { box-shadow: inset 0 0 0 1px rgba(255,255,255,.7); }
+  .categoryOption:active { transform: scale(.97); }
+  .categoryHint { margin-top: 8px; color: var(--muted); font-size: 12px; }
+  .detailCategoryGroup { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 3px; }
+  .detailCategory { border: 1px solid rgba(255,255,255,.5); background: rgba(255,255,255,.22);
+                    padding: 7px 11px; border-radius: 99px; font-size: 12px; font-weight: 700; }
+  .postModeNotice { background: rgba(101,84,217,.12); border-radius: 13px; padding: 12px;
+                    display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .postModeNotice[hidden] { display: none; }
+  .postModeNotice button { font: inherit; background: transparent; color: #6b58db; border: 0;
+                           font-size: 12px; font-weight: 700; cursor: pointer; }
+  .editPreviewBtn { display: block; width: 100%; flex-shrink: 0; text-shadow: none; padding: 13px;
+                    border: 0; border-radius: 12px; font: inherit; font-weight: 700;
+                    background: #6352d7; color: #fff; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="authGate">
+  <div class="authPanel">
+    <h1>EventSwipe</h1>
+    <p id="authIntro">Sign in to discover ASU events.</p>
+    <form id="authForm" autocomplete="on">
+      <label>Email <input id="authEmail" type="email" autocomplete="email" required maxlength="254"></label>
+      <label>Password <input id="authPassword" type="password" autocomplete="current-password" required minlength="8" maxlength="128"></label>
+      <label id="authConfirmRow" hidden>Confirm password <input id="authConfirm" type="password" autocomplete="new-password" maxlength="128"></label>
+      <div id="authError" class="authError" role="alert"></div>
+      <button id="authSubmit" type="submit">Log In</button>
+    </form>
+    <button id="authSwitch" class="authSwitch" type="button">New here? Create an account</button>
+  </div>
+</div>
+<nav role="tablist">
+  <button role="tab" id="tabFeed" aria-selected="true">Discover</button>
+  <button role="tab" id="tabDetails" aria-selected="false">Details</button>
+</nav>
+<button id="undoSwipeBtn" type="button" aria-label="Undo last left swipe" title="Bring back the last passed event" hidden>
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-2"/></svg>
+  <span>Undo</span>
+</button>
+
+<section id="feed" class="active">
+  <div id="stack"></div>
+</section>
+
+<section id="details"><div id="dbg"></div><div id="dcard"></div><span id="detailPass" class="detailSwipeStamp swipeFeedback pass" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M19 19 45 45 M45 19 19 45"/></svg></span><span id="detailOpen" class="detailSwipeStamp swipeFeedback open" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M14 32 27 44 50 19"/></svg></span><button id="previewBack" type="button" hidden>‹ Back to My Page</button></section>
+
+<section id="post">
+  <button type="button" id="backBtn" class="back">‹ Back</button>
+  <div id="postModeNotice" class="postModeNotice" hidden>
+    <strong>Edit your event</strong>
+    <button id="cancelEdit" type="button">Cancel editing</button>
+  </div>
+  <form id="form" novalidate>
+    <label>Title <input id="title" required maxlength="80"></label>
+    <label>Date &amp; time <input id="date" type="datetime-local" required></label>
+    <label>Location <input id="location" required maxlength="100"></label>
+    <fieldset class="categoryPicker" id="categoryPicker">
+      <legend>Categories <span class="categorySub">(choose one or more)</span></legend>
+      <div id="categoryList" class="categoryList" role="group" aria-label="Event categories"></div>
+      <div id="categoryHint" class="categoryHint">Choose at least one. First selected shows on Discover.</div>
+    </fieldset>
+    <label>Description <textarea id="descInput" maxlength="500"></textarea></label>
+    <label>Event photo <input id="photo" type="file" accept="image/*">
+      <img id="photoPrev" alt="Photo preview" hidden><span class="err" id="photoMsg"></span></label>
+    <label>Ticket price ($, optional) <input id="price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Leave blank if unknown"></label>
+    <label>Event website <input id="link" placeholder="example.com/tickets" inputmode="url" autocapitalize="off" autocomplete="off">
+      <span class="err" id="linkErr"></span></label>
+    <button id="submit" type="submit" disabled>Post event</button>
+  </form>
+</section>
+
+<section id="account">
+  <button type="button" id="acctBack" class="back">‹ Back</button>
+  <div id="acct"></div>
+</section>
+<section id="map">
+  <div id="gmap"></div>
+  <div id="mapFallback" hidden></div>
+  <div id="mapStatus" role="status" aria-live="polite">Map not loaded</div>
+  <button type="button" id="mapBack" class="mapBack">‹ Back</button>
+</section>
+  <div class="bar" role="toolbar" aria-label="Navigation">
+    <button id="homeBtn" class="current" aria-label="Home" title="Home"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/></svg></button>
+    <button id="mapBtn" aria-label="Map" title="Map"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11a7 7 0 0114 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg></button>
+    <button id="searchBtn" aria-label="Search" title="Search"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button>
+    <button id="postBtn" aria-label="Post an event" title="Post an event"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+    <button id="acctBtn" aria-label="Account" title="Account"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg></button>
+  </div>
+<div id="searchOverlay" hidden>
+  <div class="searchPanel" role="dialog" aria-modal="true" aria-labelledby="searchTitle">
+    <div class="searchHeading">
+      <div><h2 id="searchTitle">Find your next event</h2><p>Discover events by name, category or place.</p></div>
+      <button class="searchClose" id="searchClose" type="button" aria-label="Close search">×</button>
+    </div>
+    <div class="searchField">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+      <input id="searchBox" type="search" placeholder="Music, hackathons, Tempe…" aria-label="Search events" autocomplete="off">
+    </div>
+    <div id="searchSummary" class="searchSummary" aria-live="polite"></div>
+    <div id="searchMatches"></div>
+    <button id="searchApply" type="button">Show events</button>
+  </div>
+</div>
+<div id="toast" role="status"></div>
+
+<script>
+const MAPTILER_API_KEY = "";
+
+const CATEGORY_OPTIONS = [
+  'Academics',
+  'Sports',
+  'Running',
+  'Cycling',
+  'Art & Design',
+  'Spiritual & Faith',
+  'Computer Science',
+  'Engineering',
+  'Parties & Nightlife',
+  'Books & Literature',
+  'Free Food',
+  'Music & Concerts',
+  'Career & Networking',
+  'Entrepreneurship',
+  'Volunteering',
+  'Outdoors & Hiking',
+  'Health & Wellness',
+  'Gaming & Esports',
+  'Film & Theater',
+  'Cultural & Diversity'
+];
+const CATEGORIES = {
+  "Music": ["#7c3aed", "#ec4899"], "Food & Drink": ["#f97316", "#dc2626"], "Sports": ["#16a34a", "#0d9488"],
+  "Arts": ["#4f46e5", "#7c3aed"], "Tech": ["#2563eb", "#06b6d4"], "Social": ["#ec4899", "#f97316"], "Other": ["#9ca3af", "#4b5563"]
+};
+const PALETTES = [["#4f46e5","#7c3aed"],["#06b6d4","#2563eb"],["#ec4899","#7c3aed"],["#16a34a","#0d9488"],["#f97316","#dc2626"]];
+CATEGORY_OPTIONS.forEach((category, index) => { if (!CATEGORIES[category]) CATEGORIES[category] = PALETTES[index % PALETTES.length]; });
+const eventCategories = event => Array.isArray(event?.categories) && event.categories.length
+  ? event.categories : (event?.category ? [event.category] : []);
+let chosenCategories = [];
+let editingEventId = null;
+
+const THRESHOLD = 110;
+
+// A server-side user ID owns each post. Local swipe history is separated per account.
+const OWNER_STORAGE_KEY = "eventswipe.ownerKey.v1";
+let sessionUser = null;
+let authMode = "login";
+let previewEvent = null;
+
+async function apiRequest(path, options = {}) {
+  let response;
+  try { response = await fetch(path, { credentials: "same-origin", ...options }); }
+  catch { throw new Error("Cannot reach the backend. Open http://localhost:3001/ and start the backend server."); }
+  let data = null;
+  try { data = await response.json(); } catch {}
+  if (!response.ok) throw new Error(data?.error || "Server error (" + response.status + ")");
+  return data;
+}
+
+const store = {
+  events: [], seen: [], interested: [], mine: [], mapEvents: [],
+  localKey(field) { return "eventswipe." + sessionUser.id + "." + field + ".v3"; },
+  async load() {
+    for (const field of ["seen", "interested"]) {
+      try { this[field] = JSON.parse(localStorage.getItem(this.localKey(field))) || []; }
+      catch { this[field] = []; }
+      if (!Array.isArray(this[field])) this[field] = [];
+    }
+    const previousLikes = [...new Set(this.interested)];
+    const [feed, mine, interests] = await Promise.all([
+      apiRequest("/api/events"), apiRequest("/api/events/mine"), apiRequest("/api/interests/mine")
+    ]);
+    this.events = feed;
+    this.mine = mine;
+    this.interested = interests.eventIds || [];
+    this.mapEvents = [];
+    // Import older browser-only Likes once. After migration, the server is the source of truth.
+    const migratedKey = this.localKey("serverInterestMigration");
+    if (localStorage.getItem(migratedKey) !== "done") {
+      const availableIds = new Set(feed.map(event => event.id));
+      let complete = true;
+      for (const id of previousLikes) {
+        if (!availableIds.has(id) || this.interested.includes(id)) continue;
+        try {
+          const result = await apiRequest("/api/events/" + encodeURIComponent(id) + "/interest", { method: "PUT" });
+          this.interested.push(id);
+          this.updateCount(id, result.interestCount);
+        } catch (error) {
+          complete = false;
+          console.warn("Could not import a previous interest:", error);
+        }
+      }
+      if (complete) localStorage.setItem(migratedKey, "done");
+    }
+    this.seen = [...new Set([...this.seen, ...this.interested])];
+    this.save();
+  },
+  async refreshCounts() {
+    const [feed, mine, interests] = await Promise.all([
+      apiRequest("/api/events"), apiRequest("/api/events/mine"), apiRequest("/api/interests/mine")
+    ]);
+    this.events = feed;
+    this.mine = mine;
+    this.interested = interests.eventIds || [];
+    this.save();
+  },
+  updateCount(id, value) {
+    for (const list of [this.events, this.mine, this.mapEvents]) {
+      const event = list.find(item => item.id === id);
+      if (event) event.interestCount = value;
+    }
+  },
+  save() {
+    try {
+      localStorage.setItem(this.localKey("seen"), JSON.stringify(this.seen));
+      // Cache only. Server records determine the count across accounts and devices.
+      localStorage.setItem(this.localKey("interested"), JSON.stringify(this.interested));
+    } catch { toast(document.createTextNode("Could not save your swipe history in this browser.")); }
+  },
+  feed() {
+    const q = query.trim().toLowerCase();
+    return this.events
+      .filter(e => !this.seen.includes(e.id) && e.date > Date.now())
+      .filter(e => !q || [e.title, e.location, e.details, ...eventCategories(e)].join(" ").toLowerCase().includes(q))
+      .sort((a, b) => a.date - b.date);
+  },
+  async addInterest(id) {
+    const result = await apiRequest("/api/events/" + encodeURIComponent(id) + "/interest", { method: "PUT" });
+    if (!this.interested.includes(id)) this.interested.push(id);
+    this.updateCount(id, result.interestCount);
+    this.markSeen(id);
+    return result;
+  },
+  async cancelInterest(id) {
+    const result = await apiRequest("/api/events/" + encodeURIComponent(id) + "/interest", { method: "DELETE" });
+    this.interested = this.interested.filter(x => x !== id);
+    this.updateCount(id, result.interestCount);
+    this.save();
+    return result;
+  },
+  async remove(id) {
+    await apiRequest("/api/events/" + encodeURIComponent(id), { method: "DELETE" });
+    this.mine = this.mine.filter(e => e.id !== id);
+    this.mapEvents = this.mapEvents.filter(e => e.id !== id);
+    this.save();
+  },
+  async add(event) {
+    const created = await apiRequest("/api/events", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(event)
+    });
+    this.mine.push(created);
+    this.mapEvents.push(created);
+    return created;
+  },
+  async edit(id, event) {
+    const updated = await apiRequest("/api/events/" + encodeURIComponent(id), {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(event)
+    });
+    for (const list of [this.mine, this.events, this.mapEvents]) {
+      const index = list.findIndex(item => item.id === id);
+      if (index >= 0) list[index] = updated;
+    }
+    return updated;
+  },
+  markSeen(id) {
+    if (!this.seen.includes(id)) this.seen.push(id);
+    this.save();
+  }
+};
+
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+
+function toast(html) { const t = $("toast"); t.replaceChildren(); t.append(html); t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 5000); }
+
+// ---- Cards ----
+const IMG_OK = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/;
+
+// Uploaded photo if the event has one; otherwise the category color gradient. Returns true when a photo was applied.
+function applyBg(node, ev) {
+  node.replaceChildren(); node.style.backgroundImage = "";
+  if (ev && typeof ev.image === "string" && (IMG_OK.test(ev.image) || /^\/event-photos\/[A-Za-z0-9_-]+\.(?:webp|png|jpe?g|svg)$/.test(ev.image))) { node.style.backgroundImage = `url("${ev.image}")`; return true; }
+  const cat = ev && CATEGORIES[ev.category] ? ev.category : "Other";
+  node.style.backgroundImage = `linear-gradient(135deg, ${CATEGORIES[cat][0]}, ${CATEGORIES[cat][1]})`;
+  return false;
+}
+
+function remainingDays(timestamp) {
+  const end = new Date(timestamp);
+  const today = new Date();
+  const dayNumber = d => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 864e5;
+  return Math.round(dayNumber(end) - dayNumber(today));
+}
+
+function countdownBadge(timestamp) {
+  const days = remainingDays(timestamp);
+  if (!Number.isFinite(days)) return null;
+  const label = days <= 0 ? "Today" : days === 1 ? "1 day left" : days + " days left";
+  return el("span", "countdown" + (days <= 1 ? " urgent" : ""), label);
+}
+
+function interestBadge(ev) {
+  const count = Math.max(0, Number(ev.interestCount) || 0);
+  const badge = el("span", "interestStreak");
+  badge.title = count + (count === 1 ? " person" : " people") + " interested · not confirmed RSVPs";
+  badge.setAttribute("aria-label", badge.title);
+  badge.append(el("span", "flame", "🔥"), document.createTextNode(count.toLocaleString()));
+  return badge;
+}
+
+function makeSwipeFeedback(right) {
+  const badge = el("span", "stamp swipeFeedback " + (right ? "open" : "skip"));
+  badge.setAttribute("aria-hidden", "true");
+  badge.innerHTML = right
+    ? '<svg viewBox="0 0 64 64"><path d="M14 32 27 44 50 19"/></svg>'
+    : '<svg viewBox="0 0 64 64"><path d="M19 19 45 45 M45 19 19 45"/></svg>';
+  return badge;
+}
+
+function updateSwipeFeedback(node, progress, right) {
+  const p = Math.max(0, Math.min(1, progress));
+  node.style.opacity = p < .05 ? "0" : String(p);
+  node.style.transform = `scale(${(.72 + p * .4).toFixed(3)}) rotate(${(right ? -12 : 12) * (1 - p)}deg)`;
+  if (p < .1) node.classList.remove("committed");
+}
+
+function makeCard(ev) {
+  const c = el("div", "card");
+  const layers = el("div", "layers"), bg = el("div", "bg");
+  if (!applyBg(bg, ev)) c.classList.add("plain");
+  // sharp photo on top, progressively stronger blur toward the title and down to the bottom of the screen
+  layers.append(bg, el("div", "blur b1"), el("div", "blur b2"), el("div", "blur b3"), el("div", "blur b4"), el("div", "scrim"));
+  const body = el("div", "content");
+  const dateRow = el("div", "dateRow");
+  dateRow.append(el("div", "meta", "📅  " + new Date(ev.date).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })));
+  const countdown = countdownBadge(ev.date);
+  if (countdown) dateRow.append(countdown);
+  const badges = el("div", "eventBadgeRow");
+  badges.append(el("span", "chip", (eventCategories(ev)[0] || "Other").toUpperCase()), interestBadge(ev));
+  body.append(el("div", "spacer"), el("h2", "", ev.title), dateRow,
+    el("div", "meta", "📍  " + ev.location), badges);
+  if (ev.details.trim()) body.append(el("div", "desc", ev.details));
+  c.append(layers, body, makeSwipeFeedback(false), makeSwipeFeedback(true));
+  return c;
+}
+
+let topCard = null, topEvent = null, busy = false, moved = false, query = "";
+let lastPassedEventId = null;
+
+function updateUndoButton() {
+  const active = document.querySelector("section.active")?.id;
+  const available = !!sessionUser && !busy && !previewEvent &&
+    (active === "feed" || active === "details") && !!lastPassedEventId &&
+    store.seen.includes(lastPassedEventId) && !store.interested.includes(lastPassedEventId) &&
+    store.events.some(event => event.id === lastPassedEventId);
+  $("undoSwipeBtn").hidden = !available;
+}
+
+$("undoSwipeBtn").onclick = () => {
+  if (busy || !lastPassedEventId) return;
+  const id = lastPassedEventId;
+  if (!store.seen.includes(id) || store.interested.includes(id)) return;
+  store.seen = store.seen.filter(seenId => seenId !== id);
+  store.save();
+  lastPassedEventId = null;
+  render();
+  if ($("details").classList.contains("active") && !previewEvent) renderDetails();
+  updateUndoButton();
+};
+
+function render() {
+  const stack = $("stack"); stack.replaceChildren(); topCard = topEvent = null;
+  const feed = store.feed();
+  if (!feed.length) {
+    const e = el("div"); e.id = "empty";
+    const q = query.trim();
+    e.append(el("div", "", q ? "🔍" : "🎉"), el("h2", "", q ? "No matches" : "You're all caught up"),
+      el("div", "", q ? "Nothing found for “" + q + "”." : "Check back later or post an event."));
+    stack.append(e); return;
+  }
+  if (feed[1]) { const b = makeCard(feed[1]); b.classList.add("back"); stack.append(b); }
+  topEvent = feed[0]; topCard = makeCard(feed[0]); topCard.classList.add("top"); stack.append(topCard);
+  attachDrag(topCard);
+}
+
+function setPose(card, x, y) {
+  card.style.transform = `translate(${x}px, ${y * 0.2}px) rotate(${x / 20}deg)`;
+  updateSwipeFeedback(card.querySelector(".stamp.skip"), x < -22 ? (-x - 22) / (THRESHOLD - 22) : 0, false);
+  updateSwipeFeedback(card.querySelector(".stamp.open"), x > 22 ? (x - 22) / (THRESHOLD - 22) : 0, true);
+}
+
+function attachDrag(card) {
+  let sx = 0, sy = 0, dx = 0, dy = 0, dragging = false;
+  card.addEventListener("pointerdown", e => { if (busy) return; dragging = true; sx = e.clientX; sy = e.clientY; dx = dy = 0;
+    card.classList.remove("snap"); card.setPointerCapture(e.pointerId); });
+  card.addEventListener("pointermove", e => { if (!dragging) return; dx = e.clientX - sx; dy = e.clientY - sy; if (Math.abs(dx) + Math.abs(dy) > 8) moved = true; setPose(card, dx, dy); });
+  const end = () => {
+    if (!dragging) return; dragging = false;
+    if (dx > THRESHOLD) swipe(true); else if (dx < -THRESHOLD) swipe(false);
+    else { card.classList.add("snap"); setPose(card, 0, 0); }
+  };
+  card.addEventListener("pointerup", end);
+  card.addEventListener("pointercancel", () => { dragging = false; card.classList.add("snap"); setPose(card, 0, 0); });
+}
+
+function setDetailPose(x, y, animate = false) {
+  const card = $("dcard"), bg = $("dbg");
+  const transition = animate ? "transform .25s ease-out, opacity .25s ease-out" : "none";
+  card.style.transition = transition;
+  bg.style.transition = transition;
+  card.style.transform = `translate3d(${x}px, ${y * .1}px, 0) rotate(${x / 35}deg)`;
+  bg.style.transform = `translate3d(${x * .22}px, 0, 0)`;
+  card.style.opacity = x === 0 ? "1" : String(Math.max(.45, 1 - Math.abs(x) / innerWidth * .22));
+  updateSwipeFeedback($("detailPass"), x < -22 ? (-x - 22) / (THRESHOLD - 22) : 0, false);
+  updateSwipeFeedback($("detailOpen"), x > 22 ? (x - 22) / (THRESHOLD - 22) : 0, true);
+}
+function resetDetailPose() {
+  const card = $("dcard"), bg = $("dbg");
+  for (const node of [card, bg]) {
+    node.style.transition = "";
+    node.style.transform = "";
+    node.style.opacity = "";
+  }
+  updateSwipeFeedback($("detailPass"), 0, false);
+  updateSwipeFeedback($("detailOpen"), 0, true);
+}
+function swipe(right, source = "feed") {
+  if (busy || !topEvent || (source === "details" && (previewEvent || !$("details").classList.contains("active")))) return;
+  busy = true;
+  moved = true;
+  if (right) lastPassedEventId = null;
+  updateUndoButton();
+  const ev = topEvent, card = topCard;
+  if (right) {
+    const href = safeEventUrl(ev.link);
+    if (href) {
+      // User-initiated gesture: open before the asynchronous interest request.
+      const w = window.open(href, "_blank", "noopener");
+      if (!w) { const a = el("a", "", "Open " + new URL(href).hostname); a.href = href; a.target = "_blank"; a.rel = "noopener"; toast(a); }
+    }
+  }
+  if (source === "details") {
+    setDetailPose((right ? 1 : -1) * innerWidth * 1.2, 0, true);
+    $(right ? "detailOpen" : "detailPass").classList.add("committed");
+  } else if (card) {
+    card.classList.add("fly");
+    const back = $("stack").querySelector(".back");
+    if (back) { back.style.transform = "none"; back.style.opacity = 1; }
+    setPose(card, (right ? 1 : -1) * innerWidth * 1.2, 0);
+    card.querySelector(right ? ".stamp.open" : ".stamp.skip").classList.add("committed");
+  }
+  setTimeout(async () => {
+    try {
+      if (right) await store.addInterest(ev.id);
+      else {
+        store.markSeen(ev.id);
+        lastPassedEventId = ev.id;
+      }
+    } catch (error) {
+      toast(document.createTextNode("Couldn't save interest: " + error.message));
+    } finally {
+      render();
+      if (source === "details") {
+        resetDetailPose();
+        if ($("details").classList.contains("active") && !previewEvent) renderDetails();
+      }
+      busy = false;
+      updateUndoButton();
+    }
+  }, 280);
+}
+
+// Only Discover's Details supports swiping; My Page previews never change the feed.
+(function enableDetailsSwipe() {
+  const detailPanel = $("details");
+  let sx = 0, sy = 0, dx = 0, dy = 0, pressed = false, horizontal = false;
+  const canSwipe = () => detailPanel.classList.contains("active") && !previewEvent && !!topEvent && !busy;
+  detailPanel.addEventListener("pointerdown", event => {
+    if (!canSwipe() || event.target.closest("a, button, input, textarea, select, label")) return;
+    pressed = true; horizontal = false; sx = event.clientX; sy = event.clientY; dx = dy = 0;
+  });
+  detailPanel.addEventListener("pointermove", event => {
+    if (!pressed || !canSwipe()) return;
+    dx = event.clientX - sx; dy = event.clientY - sy;
+    if (!horizontal && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+      horizontal = true;
+      moved = true;
+      try { detailPanel.setPointerCapture(event.pointerId); } catch {}
+    }
+    if (horizontal) {
+      moved = true;
+      setDetailPose(dx, dy);
+    }
+  });
+  detailPanel.addEventListener("pointerup", event => {
+    if (!pressed) return;
+    pressed = false;
+    if (horizontal && canSwipe() && Math.abs(dx) >= THRESHOLD) swipe(dx > 0, "details");
+    else if (horizontal) {
+      setDetailPose(0, 0, true);
+      setTimeout(() => { if (!busy) resetDetailPose(); }, 270);
+    }
+    horizontal = false;
+    if (detailPanel.hasPointerCapture(event.pointerId)) detailPanel.releasePointerCapture(event.pointerId);
+  });
+  detailPanel.addEventListener("pointercancel", () => {
+    pressed = horizontal = false;
+    if (!busy) resetDetailPose();
+  });
+})();
+
+addEventListener("keydown", e => {
+  if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
+  const onFeed = $("feed").classList.contains("active");
+  const onDiscoverDetails = $("details").classList.contains("active") && !previewEvent;
+  if (!onFeed && !onDiscoverDetails) return;
+  if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    e.preventDefault();
+    swipe(e.key === "ArrowRight", onDiscoverDetails ? "details" : "feed");
+  }
+});
+
+// ---- Tabs ----
+const money = p => (+p > 0 ? "$" + (+p).toFixed(2) : "Free");
+
+function renderDetails() {
+  resetDetailPose();
+  const d = $("dcard"); d.replaceChildren();
+  const ev = previewEvent || topEvent;
+  $("previewBack").hidden = !previewEvent;
+  if (!ev) {
+    $("dbg").classList.add("plain"); applyBg($("dbg"), null);
+    d.append(el("h2", "", "No event to show"), el("div", "", "You're all caught up. Post an event using the + button on Discover."));
+    return;
+  }
+  $("dbg").classList.toggle("plain", !applyBg($("dbg"), ev));
+  const row = (k, v, plain) => { const r = el("div", "row"); r.append(el("span", "k", k), el("span", "v" + (plain ? " plain" : ""), v)); return r; };
+  d.append(el("h2", "", ev.title),
+    row("Date & time", new Date(ev.date).toLocaleString([], { dateStyle: "full", timeStyle: "short" })),
+    row("Location", ev.location));
+  const categories = eventCategories(ev);
+  if (categories.length) {
+    d.append(el("div", "row", "Categories"));
+    const group = el("div", "detailCategoryGroup");
+    categories.forEach(category => group.append(el("span", "detailCategory", category)));
+    d.append(group);
+  }
+  if (ev.details.trim()) d.append(row("Description", ev.details, true));
+  if (ev.price != null && Number.isFinite(+ev.price)) d.append(row("Ticket price", money(ev.price)));
+  const href = safeEventUrl(ev.link);
+  if (href) {
+    const a = el("a", "eventLink", "View Event Website ↗");
+    a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
+    a.style.cssText = "display:block;text-align:center;text-shadow:none;text-decoration:none";
+    d.append(a);
+  }
+  if (previewEvent && store.mine.some(post => post.id === ev.id)) {
+    const edit = el("button", "editPreviewBtn", "✎ Edit Post"); edit.type = "button";
+    edit.onclick = () => startEditing(ev);
+    d.append(edit);
+  }
+}
+
+// ---- Map page (MapTiler + MapLibre) ----
+const getKey = () => MAPTILER_API_KEY || (() => { try { return localStorage.getItem("maptiler.key.v1") || ""; } catch { return ""; } })();
+const upcoming = () => store.mapEvents.filter(e => e.date > Date.now()).sort((a, b) => a.date - b.date);
+let gmap = null, mapKeyUsed = "", gMarkers = [], mapRenderId = 0;
+const geoCache = (() => { try { return JSON.parse(localStorage.getItem("maptiler.geo.v1")) || {}; } catch { return {}; } })();
+
+function mapStatus(text) { $("mapStatus").textContent = text; }
+function clearMap() {
+  gMarkers.forEach(marker => marker.remove());
+  gMarkers = [];
+  if (gmap) gmap.remove();
+  gmap = null;
+  mapKeyUsed = "";
+}
+
+function showMapFallback(msg) {
+  const f = $("mapFallback"); f.hidden = false; f.replaceChildren();
+  f.append(el("h2", "", "Event Map"), el("p", "", msg));
+  const getKeyLink = el("a", "", "Get a free MapTiler API key ↗");
+  getKeyLink.href = "https://cloud.maptiler.com/account/keys/";
+  getKeyLink.target = "_blank"; getKeyLink.rel = "noopener";
+  f.append(getKeyLink);
+  const row = el("div", "keyrow"), inp = el("input"), save = el("button", "", "Use key");
+  inp.placeholder = "Paste MapTiler API key"; inp.autocomplete = "off"; inp.spellcheck = false;
+  save.type = "button";
+  save.onclick = () => {
+    const key = inp.value.trim(); if (!key) return;
+    try { localStorage.setItem("maptiler.key.v1", key); }
+    catch { mapStatus("Could not save key in this browser"); return; }
+    clearMap(); renderMap();
+  };
+  row.append(inp, save); f.append(row);
+  if (getKey()) {
+    const remove = el("button", "", "Remove saved key"); remove.type = "button";
+    remove.onclick = () => { try { localStorage.removeItem("maptiler.key.v1"); } catch {} clearMap(); renderMap(); };
+    f.append(remove);
+  }
+  f.append(el("p", "", "For testing, the key is saved in this browser only. A public website should use a key restricted to its website origin."));
+  mapStatus("Map unavailable");
+}
+
+function validCoordinates(e) {
+  const latRaw = e.lat ?? e.latitude, lngRaw = e.lng ?? e.lon ?? e.longitude;
+  if (latRaw == null || lngRaw == null || latRaw === "" || lngRaw === "") return null;
+  const lat = Number(latRaw), lng = Number(lngRaw);
+  return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? { lat, lng } : null;
+}
+
+async function geocodeLocation(address, key) {
+  if (!address || !address.trim()) return null;
+  const lookup = address.trim();
+  const cacheKey = lookup.toLowerCase();
+  if (geoCache[cacheKey]) return geoCache[cacheKey];
+  const query = /,|\b(Tempe|Phoenix|Mesa|Scottsdale|Arizona|AZ|USA)\b/i.test(lookup) ? lookup : lookup + ", Tempe, Arizona, USA";
+  const url = "https://api.maptiler.com/geocoding/" + encodeURIComponent(query) + ".json?key=" +
+    encodeURIComponent(key) + "&limit=1";
+  const response = await fetch(url);
+  if (response.status === 401 || response.status === 403) throw new Error("MapTiler rejected the API key or website origin (HTTP " + response.status + ").");
+  if (!response.ok) return null;
+  const data = await response.json();
+  const coords = data?.features?.[0]?.geometry?.coordinates;
+  if (!Array.isArray(coords) || coords.length < 2) return null;
+  const [lng, lat] = coords;
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+  geoCache[cacheKey] = { lat, lng };
+  try { localStorage.setItem("maptiler.geo.v1", JSON.stringify(geoCache)); } catch {}
+  return geoCache[cacheKey];
+}
+
+function safeEventUrl(raw) {
+  try { const u = new URL(raw); return ["https:", "http:"].includes(u.protocol) ? u.href : null; }
+  catch { return null; }
+}
+
+function popupNode(group) {
+  const root = el("div"); root.style.cssText = "color:#111;font:14px/1.45 system-ui,sans-serif;min-width:190px;max-width:250px";
+  const name = el("p", "", group.name); name.style.fontWeight = "700"; root.append(name);
+  for (const e of group.events) {
+    const info = el("p"), title = el("strong", "", e.title);
+    const when = el("div", "", new Date(e.date).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }));
+    info.append(title, when);
+    const href = safeEventUrl(e.link);
+    if (href) { const a = el("a", "", "View Event Website ↗"); a.href = href; a.target = "_blank"; a.rel = "noopener"; info.append(a); }
+    root.append(info);
+  }
+  const dir = el("a", "", "Directions ↗");
+  dir.href = "https://www.google.com/maps/dir/?api=1&destination=" + encodeURIComponent(group.name);
+  dir.target = "_blank"; dir.rel = "noopener";
+  root.append(dir);
+  return root;
+}
+
+async function renderMap() {
+  const renderId = ++mapRenderId;
+  const key = getKey();
+  if (!key) { clearMap(); showMapFallback("Paste a free MapTiler API key to load the real interactive map."); return; }
+  if (typeof maplibregl === "undefined") {
+    showMapFallback("MapLibre could not load. Check your internet connection or browser's blocked scripts.");
+    return;
+  }
+  $("mapFallback").hidden = true;
+  mapStatus("Loading ASU event locations…");
+  try {
+    store.mapEvents = await apiRequest("/api/events/map");
+    if (renderId !== mapRenderId) return;
+    if (!gmap || mapKeyUsed !== key) {
+      clearMap();
+      mapKeyUsed = key;
+      gmap = new maplibregl.Map({
+        container: "gmap",
+        style: "https://api.maptiler.com/maps/streets-v4/style.json?key=" + encodeURIComponent(key),
+        center: [-111.9343, 33.418],
+        zoom: 12.5
+      });
+      gmap.addControl(new maplibregl.NavigationControl(), "top-right");
+      gmap.on("error", event => {
+        if (!$("map").classList.contains("active")) return;
+        const message = String(event?.error?.message || "");
+        if (/401|403|unauthori|forbidden|access denied|api key/i.test(message)) {
+          showMapFallback("MapTiler could not load this map (possibly a key or allowed-origin restriction). Verify the API key and try again.");
+        } else {
+          mapStatus("Map load issue. Check the browser Console for details.");
+        }
+      });
+    }
+    gmap.resize();
+    gMarkers.forEach(marker => marker.remove()); gMarkers = [];
+    const groups = new Map();
+    for (const e of upcoming()) {
+      const pos = validCoordinates(e);
+      const groupKey = pos ? pos.lat.toFixed(5) + "," + pos.lng.toFixed(5) : String(e.location || "").trim().toLowerCase();
+      if (!groupKey) continue;
+      if (!groups.has(groupKey)) groups.set(groupKey, { name: e.location || "Event location", pos, events: [] });
+      groups.get(groupKey).events.push(e);
+    }
+    const missing = [], points = [];
+    for (const group of groups.values()) {
+      if (renderId !== mapRenderId) return;
+      const pos = group.pos || await geocodeLocation(group.name, key);
+      if (!pos) { missing.push(group.name); continue; }
+      const marker = new maplibregl.Marker({ color: "#4f46e5" })
+        .setLngLat([pos.lng, pos.lat])
+        .setPopup(new maplibregl.Popup({ offset: 25, maxWidth: "300px" }).setDOMContent(popupNode(group)))
+        .addTo(gmap);
+      gMarkers.push(marker);
+      points.push([pos.lng, pos.lat]);
+    }
+    if (renderId !== mapRenderId) return;
+    if (points.length === 1) gmap.flyTo({ center: points[0], zoom: 14.5 });
+    else if (points.length > 1) {
+      const bounds = new maplibregl.LngLatBounds(points[0], points[0]);
+      for (const point of points.slice(1)) bounds.extend(point);
+      gmap.fitBounds(bounds, { padding: 80, maxZoom: 15 });
+    }
+    const mapped = gMarkers.reduce((sum, marker) => sum + 1, 0);
+    mapStatus(mapped + " event location(s) on map" + (missing.length ? " · " + missing.length + " location(s) not found" : ""));
+    if (!mapped) mapStatus("No locations mapped. Use a precise address or lat/lng for each event.");
+    if (missing.length) console.info("Unmapped event locations:", missing);
+  } catch (err) {
+    console.error("Event map error:", err);
+    if (renderId === mapRenderId) showMapFallback("Could not load the event map: " + String(err?.message || err));
+  }
+}
+
+function renderAccount() {
+  const a = $("acct"); a.replaceChildren();
+  const logout = el("button", "", "Log Out"); logout.type = "button";
+  logout.onclick = async () => {
+    logout.disabled = true;
+    try {
+      await apiRequest("/api/auth/logout", { method: "POST" });
+      sessionUser = null;
+      lastPassedEventId = null;
+      updateUndoButton();
+      store.events = []; store.mine = []; store.mapEvents = []; store.seen = []; store.interested = [];
+      query = ""; $("searchBox").value = ""; closeSearch(true);
+      document.body.classList.remove("authenticated");
+      showAuth();
+    } catch (err) { logout.disabled = false; toast(document.createTextNode(err.message)); }
+  };
+  a.append(el("h2", "", "My Page"),
+    el("p", "", "Signed in as " + sessionUser.email),
+    el("div", "stat", "Your posts: " + store.mine.length),
+    el("div", "stat", "Events you've swiped: " + store.seen.length));
+
+  a.append(el("h2", "", "Interested events"),
+    el("p", "", "Swiping right saves an event here. It does not mean you RSVP'd."));
+  const interested = store.events.filter(e => store.interested.includes(e.id) && e.date > Date.now());
+  if (!interested.length) a.append(el("p", "", "No interested events yet."));
+  for (const e of interested) {
+    const row = el("div", "mgRow"), info = el("span", "", e.title + " · " + new Date(e.date).toLocaleDateString());
+    const link = el("a", "", "Website ↗");
+    const url = safeEventUrl(e.link);
+    if (url) { link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer"; }
+    const details = el("button", "", "Details"); details.type = "button";
+    details.onclick = () => { previewEvent = e; showTab("details"); };
+    const cancel = el("button", "delete", "Cancel"); cancel.type = "button";
+    cancel.title = "Remove from Interested Events (does not cancel an official RSVP)";
+    cancel.onclick = async () => {
+      cancel.disabled = true;
+      try { await store.cancelInterest(e.id); renderAccount(); }
+      catch (error) { cancel.disabled = false; toast(document.createTextNode(error.message)); }
+    };
+    row.append(info, details); if (url) row.append(link);
+    row.append(cancel); a.append(row);
+  }
+
+  a.append(el("h2", "", "Your posts"), el("p", "", "Only posts from your account appear here."));
+  if (!store.mine.length) a.append(el("p", "", "You haven't posted any events yet."));
+  for (const e of [...store.mine].sort((x, y) => x.date - y.date)) {
+    const row = el("div", "mgRow"), info = el("span", "", e.title + " · " + new Date(e.date).toLocaleDateString());
+    const likes = el("div", "postInterest", "🔥 " + Math.max(0, Number(e.interestCount) || 0).toLocaleString() + " interested");
+    likes.title = "Unique accounts interested · not confirmed RSVPs";
+    const preview = el("button", "", "Preview"); preview.type = "button";
+    preview.onclick = () => { previewEvent = e; showTab("details"); };
+    const del = el("button", "delete", "Delete"); del.type = "button";
+    del.onclick = async () => {
+      if (!confirm('Delete "' + e.title + '"? This cannot be undone.')) return;
+      del.disabled = true;
+      try { await store.remove(e.id); renderAccount(); toast(document.createTextNode("Event deleted.")); }
+      catch (err) { del.disabled = false; toast(document.createTextNode(err.message)); }
+    };
+    row.append(info, likes, preview, del); a.append(row);
+  }
+  a.append(logout);
+}
+
+// Bottom-menu order: Home(0), Map(1), Search(2, popup), Post(3), My Page(4).
+// Details stays a subview of Home, so its existing tap-to-toggle behavior is unchanged.
+const pagePositions = { feed: 0, map: 1, post: 3, account: 4 };
+const navButtons = { feed: "homeBtn", map: "mapBtn", post: "postBtn", account: "acctBtn" };
+function selectedPage(name) {
+  return name === "details" ? (previewEvent ? "account" : "feed") : name;
+}
+let lastSelectedPage = "feed";
+function updateBottomNav(name) {
+  const selected = selectedPage(name);
+  const searchOpen = !$("searchOverlay").hidden;
+  for (const [page, id] of Object.entries(navButtons)) {
+    const btn = $(id), active = !searchOpen && page === selected;
+    btn.classList.toggle("current", active);
+    if (active) btn.setAttribute("aria-current", "page");
+    else btn.removeAttribute("aria-current");
+  }
+  $("searchBtn").classList.toggle("current", searchOpen);
+  $("searchBtn").setAttribute("aria-expanded", String(searchOpen));
+  if (selected !== lastSelectedPage && navButtons[selected] && !reduceMotion) {
+    const btn = $(navButtons[selected]);
+    btn.classList.remove("tab-pop");
+    void btn.offsetWidth;
+    btn.classList.add("tab-pop");
+    setTimeout(() => btn.classList.remove("tab-pop"), 330);
+  }
+  lastSelectedPage = selected;
+}
+const slideClasses = ["leaving", "enter-from-left", "enter-from-right", "exit-to-left", "exit-to-right"];
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+let slideTimer = null;
+let searchTimer = null;
+
+function closeSearch(immediate = false) {
+  const overlay = $("searchOverlay");
+  if (searchTimer) clearTimeout(searchTimer);
+  if (overlay.hidden) return;
+  if (immediate || reduceMotion) { overlay.hidden = true; overlay.classList.remove("closing"); updateBottomNav(document.querySelector("section.active")?.id || "feed"); return; }
+  overlay.classList.add("closing");
+  searchTimer = setTimeout(() => { overlay.hidden = true; overlay.classList.remove("closing"); updateBottomNav(document.querySelector("section.active")?.id || "feed"); }, 180);
+}
+
+function updateSearchMatches() {
+  const results = store.feed();
+  const summary = $("searchSummary");
+  summary.textContent = results.length + (results.length === 1 ? " event found" : " events found");
+  const list = $("searchMatches");
+  list.replaceChildren();
+  for (const event of results.slice(0, 5)) {
+    const button = el("button", "searchResult"); button.type = "button";
+    button.append(el("strong", "", event.title),
+      el("span", "", (eventCategories(event)[0] || "Other") + " · " + new Date(event.date).toLocaleDateString() + " · " + event.location));
+    button.onclick = () => { query = event.title; $("searchBox").value = query; closeSearch(true); showTab("feed"); };
+    list.append(button);
+  }
+  if (!results.length) list.append(el("p", "", "No upcoming events match your search."));
+  $("searchApply").textContent = "Show " + results.length + (results.length === 1 ? " event" : " events");
+}
+
+function openSearch() {
+  if (searchTimer) clearTimeout(searchTimer);
+  const overlay = $("searchOverlay");
+  overlay.classList.remove("closing");
+  overlay.hidden = false;
+  updateBottomNav(document.querySelector("section.active")?.id || "feed");
+  updateSearchMatches();
+  requestAnimationFrame(() => $("searchBox").focus());
+}
+
+function showTab(name) {
+  const previous = document.querySelector("section.active")?.id || "feed";
+  const oldPosition = previous === "details" ? (previewEvent ? 4 : 0) : pagePositions[previous];
+  if (name !== "details") previewEvent = null;
+  const newPosition = name === "details" ? (previewEvent ? 4 : 0) : pagePositions[name];
+  if (name !== "feed" && !$("searchOverlay").hidden) closeSearch(true);
+  document.body.classList.toggle("previewing", !!previewEvent && name === "details");
+  if (slideTimer) { clearTimeout(slideTimer); slideTimer = null; }
+  for (const panel of document.querySelectorAll("section")) {
+    panel.classList.remove(...slideClasses);
+    if (panel.id !== previous) panel.classList.remove("active");
+  }
+  if (previous !== name) {
+    const oldPanel = $(previous), nextPanel = $(name);
+    const slide = !reduceMotion && oldPosition != null && newPosition != null && oldPosition !== newPosition;
+    oldPanel.classList.remove("active");
+    if (slide) {
+      const goingRight = newPosition > oldPosition;
+      oldPanel.classList.add("leaving", goingRight ? "exit-to-left" : "exit-to-right");
+      nextPanel.classList.add("active", goingRight ? "enter-from-right" : "enter-from-left");
+      slideTimer = setTimeout(() => {
+        oldPanel.classList.remove(...slideClasses);
+        nextPanel.classList.remove(...slideClasses);
+        slideTimer = null;
+      }, 400);
+    } else nextPanel.classList.add("active");
+  }
+  $("tabFeed").setAttribute("aria-selected", name === "feed");
+  $("tabDetails").setAttribute("aria-selected", name === "details");
+  document.body.classList.toggle("on-sub", name === "post" || name === "account" || name === "map");
+  updateBottomNav(name);
+  if (name === "feed") render();
+  if (name === "details") renderDetails();
+  if (name === "account") renderAccount();
+  if (name === "feed" || name === "account") {
+    const expectedUserId = sessionUser?.id;
+    store.refreshCounts().then(() => {
+      if (sessionUser?.id !== expectedUserId) return;
+      if (name === "account" && $("account").classList.contains("active")) renderAccount();
+      if (name === "feed" && $("feed").classList.contains("active") && !busy) render();
+    }).catch(error => console.warn("Could not refresh interest counts:", error));
+  }
+  if (name === "map") {
+    renderMap();
+    setTimeout(() => { if ($("map").classList.contains("active") && gmap) gmap.resize(); }, 410);
+  }
+  updateUndoButton();
+}
+$("previewBack").onclick = () => showTab("account");
+$("tabFeed").onclick = () => showTab("feed");
+$("tabDetails").onclick = () => showTab("details");
+$("backBtn").onclick = () => showTab("feed");
+$("acctBack").onclick = () => showTab("feed");
+$("mapBack").onclick = () => showTab("feed");
+
+// Bottom menu + animated centered Search popup.
+$("homeBtn").onclick = () => { query = ""; $("searchBox").value = ""; closeSearch(true); showTab("feed"); };
+$("mapBtn").onclick = () => showTab("map");
+$("searchBtn").onclick = openSearch;
+$("searchClose").onclick = () => closeSearch();
+$("searchApply").onclick = () => { closeSearch(true); showTab("feed"); };
+$("searchOverlay").addEventListener("click", e => { if (e.target === $("searchOverlay")) closeSearch(); });
+$("searchBox").addEventListener("input", e => { query = e.target.value; if ($("feed").classList.contains("active")) render(); updateSearchMatches(); });
+addEventListener("keydown", e => { if (e.key === "Escape" && !$("searchOverlay").hidden) { e.preventDefault(); closeSearch(); } });
+$("postBtn").onclick = () => { resetPostForm(); showTab("post"); };
+$("acctBtn").onclick = () => showTab("account");
+
+// Only Discover and Details toggle when the page background is clicked.
+// Post, Account, and Map stay open until their navigation controls are used.
+document.addEventListener("pointerdown", () => { moved = false; }, true);
+document.addEventListener("click", e => {
+  if (!$("searchOverlay").hidden) return;
+  const inFeed = $("feed").classList.contains("active");
+  const inDetails = $("details").classList.contains("active");
+  if (!inFeed && !inDetails) return;
+  if (previewEvent || moved || busy || e.target.closest("input, textarea, select, button, label, a, #map, .bar")) return;
+  showTab(inFeed ? "details" : "feed");
+});
+
+// ---- Post form ----
+function drawCategoryOptions() {
+  const list = $("categoryList"); list.replaceChildren();
+  for (const name of CATEGORY_OPTIONS) {
+    const label = el("label", "categoryOption");
+    const input = document.createElement("input"); input.type = "checkbox"; input.value = name; input.checked = chosenCategories.includes(name);
+    label.classList.toggle("chosen", input.checked);
+    label.classList.toggle("primary", chosenCategories[0] === name);
+    const marker = chosenCategories[0] === name ? "★ " : input.checked ? "✓ " : "";
+    label.append(input, document.createTextNode(marker + name));
+    input.onchange = () => {
+      if (input.checked) chosenCategories.push(name);
+      else chosenCategories = chosenCategories.filter(c => c !== name);
+      drawCategoryOptions(); validate();
+    };
+    list.append(label);
+  }
+  const primary = chosenCategories[0];
+  $("categoryHint").textContent = primary
+    ? "Discover shows: " + primary + " · " + chosenCategories.length + " selected"
+    : "Choose at least one. First selected shows on Discover.";
+}
+function setCategories(values = []) {
+  chosenCategories = [...new Set(values.filter(value => CATEGORY_OPTIONS.includes(value)))];
+  drawCategoryOptions();
+}
+function resetPostForm() {
+  editingEventId = null; photoData = null;
+  $("form").reset(); $("photoPrev").hidden = true; $("photoPrev").removeAttribute("src");
+  $("photoMsg").textContent = "";
+  $("date").value = defaultDate();
+  $("postModeNotice").hidden = true;
+  $("submit").textContent = "Post event";
+  setCategories(); validate();
+}
+function startEditing(event) {
+  if (!store.mine.some(post => post.id === event.id)) return;
+  editingEventId = event.id;
+  photoData = null;
+  $("title").value = event.title || "";
+  $("date").value = new Date(event.date - new Date(event.date).getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  $("location").value = event.location || "";
+  $("descInput").value = event.details || "";
+  $("price").value = event.price == null ? "" : String(event.price);
+  $("link").value = event.link || "";
+  $("photo").value = "";
+  const preview = $("photoPrev");
+  if (event.image && (IMG_OK.test(event.image) || /^\/event-photos\/[A-Za-z0-9_-]+\.(?:webp|png|jpe?g|svg)$/.test(event.image))) {
+    preview.src = event.image; preview.hidden = false;
+  } else { preview.hidden = true; preview.removeAttribute("src"); }
+  $("photoMsg").textContent = "Leave unchanged to keep the current photo.";
+  setCategories(eventCategories(event));
+  $("postModeNotice").hidden = false;
+  $("submit").textContent = "Save Changes";
+  showTab("post");
+  validate();
+}
+$("cancelEdit").onclick = () => {
+  resetPostForm();
+  showTab("account");
+};
+setCategories();
+
+function defaultDate() {
+  const d = new Date(Date.now() + 36e5); d.setMinutes(0, 0, 0);
+  return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
+}
+$("date").value = defaultDate();
+
+let photoData = null;
+$("photo").addEventListener("change", async e => {
+  const f = e.target.files[0], msg = $("photoMsg"), prev = $("photoPrev");
+  photoData = null; prev.hidden = true; msg.textContent = "";
+  if (!f) return;
+  if (!f.type.startsWith("image/")) { msg.textContent = "Choose an image file."; e.target.value = ""; return; }
+  try {
+    const bmp = await createImageBitmap(f);
+    const k = Math.min(1, 1400 / Math.max(bmp.width, bmp.height));
+    const cv = document.createElement("canvas"); cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+    cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+    photoData = cv.toDataURL("image/jpeg", 0.8);
+    prev.src = photoData; prev.hidden = false;
+  } catch { msg.textContent = "Couldn't read that image. Try a JPG or PNG."; e.target.value = ""; }
+});
+
+function parseLink(raw) {
+  let s = raw.trim(); if (!s) return null;
+  if (!/^https?:\/\//i.test(s)) s = "https://" + s;
+  try { const u = new URL(s); return (u.protocol === "http:" || u.protocol === "https:") && u.hostname.includes(".") ? u.href : null; }
+  catch { return null; }
+}
+
+function validate() {
+  const link = parseLink($("link").value);
+  $("linkErr").textContent = $("link").value.trim() && !link ? "Enter a valid link" : "";
+  const p = $("price").value;
+  const numsOk = (p === "" || (Number.isFinite(+p) && +p >= 0));
+  const ok = $("title").value.trim() && $("location").value.trim() && $("date").value && chosenCategories.length > 0 && link && numsOk;
+  $("submit").disabled = !ok; return ok ? link : null;
+}
+$("form").addEventListener("input", validate);
+
+$("form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const link = validate(); if (!link) return;
+  $("submit").disabled = true;
+  try {
+    const payload = { title: $("title").value.trim(), date: new Date($("date").value).getTime(),
+      location: $("location").value.trim(), details: $("descInput").value, link,
+      category: chosenCategories[0], categories: [...chosenCategories],
+      price: $("price").value === "" ? null : +$("price").value, ...(photoData ? { image: photoData } : {}) };
+    if (editingEventId) {
+      const updated = await store.edit(editingEventId, payload);
+      resetPostForm();
+      previewEvent = updated;
+      showTab("details");
+      toast(document.createTextNode("Changes saved!"));
+    } else {
+      await store.add(payload);
+      resetPostForm();
+      showTab("feed");
+      toast(document.createTextNode("Event posted to the shared server!"));
+    }
+  } catch (err) { toast(document.createTextNode(err.message)); }
+  validate();
+});
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const signup = mode === "register";
+  $("authIntro").textContent = signup ? "Create an account to post and explore events." : "Sign in to discover ASU events.";
+  $("authConfirmRow").hidden = !signup;
+  $("authPassword").autocomplete = signup ? "new-password" : "current-password";
+  $("authSubmit").textContent = signup ? "Create Account" : "Log In";
+  $("authSwitch").textContent = signup ? "Already have an account? Log in" : "New here? Create an account";
+  $("authError").textContent = "";
+}
+function showAuth() {
+  $("authGate").classList.remove("hidden");
+  document.body.classList.remove("authenticated");
+  $("authForm").reset();
+  setAuthMode("login");
+}
+async function finishAuth(user) {
+  lastPassedEventId = null;
+  sessionUser = user;
+  const oldKey = localStorage.getItem(OWNER_STORAGE_KEY);
+  if (oldKey) {
+    try { await apiRequest("/api/events/claim-legacy", { method: "POST", headers: { "X-Owner-Key": oldKey } }); }
+    catch (error) { console.warn("Could not import legacy browser posts:", error); }
+  }
+  await store.load();
+  document.body.classList.add("authenticated");
+  $("authGate").classList.add("hidden");
+  showTab("feed");
+}
+$("authSwitch").onclick = () => setAuthMode(authMode === "login" ? "register" : "login");
+$("authForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const email = $("authEmail").value.trim();
+  const password = $("authPassword").value;
+  if (authMode === "register" && password !== $("authConfirm").value) {
+    $("authError").textContent = "Passwords do not match."; return;
+  }
+  $("authSubmit").disabled = true;
+  $("authError").textContent = "";
+  try {
+    const path = authMode === "register" ? "/api/auth/register" : "/api/auth/login";
+    const response = await apiRequest(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+    await finishAuth(response.user);
+  } catch (error) { $("authError").textContent = error.message; }
+  finally { $("authSubmit").disabled = false; }
+});
+$("stack").innerHTML = '<div id="empty"><h2>Loading events…</h2></div>';
+apiRequest("/api/auth/me").then(data => finishAuth(data.user)).catch(() => showAuth());
+</script>
+</body>
+</html>

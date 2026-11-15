@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>EventSwipe</title>
+<link href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<style>
+  :root { color-scheme: light dark; --bg:#f2f2f7; --fg:#111; --muted:#6b6b76; --field:#fff; --line:#d4d4dc; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0e0e12; --fg:#f2f2f7; --muted:#9a9aa6; --field:#1c1c22; --line:#33333b; } }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 16px/1.4 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg);
+         display: flex; flex-direction: column; overflow: hidden; position: relative; }
+  nav { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 22px); left: 50%; transform: translateX(-50%); z-index: 5; display: flex; gap: 28px; }
+  nav button { padding: 0; border: 0; background: none; font: inherit; font-size: 22px; cursor: pointer;
+               color: rgba(20,20,30,.55); font-weight: 500; text-shadow: 0 0 8px rgba(255,255,255,.55); }
+  nav button[aria-selected="true"] { color: #fff; font-weight: 800; text-shadow: 0 1px 6px rgba(0,0,0,.4); }
+  body.on-sub nav { display: none; }
+  .bar { position: absolute; left: 50%; transform: translateX(-50%); width: min(100%, 460px); bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); z-index: 5; display: flex;
+         justify-content: space-evenly; pointer-events: none; }
+  .bar button { pointer-events: auto; width: 56px; height: 56px; border: 0; background: none; color: #fff; opacity: .7;
+                display: grid; place-items: center; cursor: pointer; padding: 0; filter: drop-shadow(0 1px 3px rgba(0,0,0,.4)); }
+  .bar button.current { opacity: 1; }
+  .bar button.current svg { stroke-width: 3; }
+  .bar svg { width: 38px; height: 38px; }
+  #searchBox { position: absolute; z-index: 6; top: calc(env(safe-area-inset-top, 0px) + 64px); left: 16px; right: 16px; width: auto;
+               box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+
+  #map { position: relative; padding: 0; }
+  #gmap { position: absolute; inset: 0; }
+  #mapStatus { position: absolute; z-index: 5; left: 14px; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); max-width: calc(100% - 28px);
+               padding: 10px 14px; background: #fff; color: #111; border-radius: 13px; box-shadow: 0 2px 12px rgba(0,0,0,.22);
+               font-size: 13px; font-weight: 600; pointer-events: none; }
+  .maplibregl-popup-content { border-radius: 12px; padding: 12px 14px; }
+  .maplibregl-popup-content a { color: #4f46e5; font-weight: 650; }
+  .maplibregl-popup-content p { margin: 0 0 8px; }
+  .maplibregl-popup-content p:last-child { margin-bottom: 0; }
+  .mapBack { position: absolute; z-index: 6; top: calc(env(safe-area-inset-top, 0px) + 12px); left: 12px; padding: 8px 14px; border: 0;
+             border-radius: 99px; background: #fff; color: #111; font: inherit; font-weight: 600; box-shadow: 0 2px 10px rgba(0,0,0,.3); cursor: pointer; }
+  #mapFallback { position: absolute; inset: 0; z-index: 3; overflow-y: auto; background: var(--bg); display: grid; gap: 14px; align-content: start;
+                 padding: calc(env(safe-area-inset-top, 0px) + 64px) 20px calc(env(safe-area-inset-bottom, 0px) + 24px); }
+  #mapFallback[hidden] { display: none; }
+  #mapFallback h2 { margin: 0; } #mapFallback p { margin: 0; color: var(--muted); }
+  #mapFallback .keyrow { display: flex; gap: 8px; } #mapFallback .keyrow input { flex: 1; }
+  #mapFallback button { padding: 10px 16px; border: 0; border-radius: 10px; background: #4f46e5; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+  .mapEv { background: var(--field); border-radius: 12px; padding: 12px 14px; display: grid; gap: 2px; }
+  .mapEv a { color: #4f46e5; font-weight: 600; }
+  #acct { display: grid; gap: 14px; align-content: start; overflow-y: auto; }
+  .mgRow { display: flex; align-items: center; gap: 10px; background: var(--field); border-radius: 12px; padding: 10px 12px; }
+  .mgRow span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  #acct .mgRow button { padding: 8px 12px; background: #4f46e5; }
+  #acct .mgRow a { font-size: 13px; color: #4f46e5; white-space: nowrap; }
+  #acct .mgRow button { font-size: 12px; white-space: nowrap; }
+  #acct .mgRow button.delete { background: #dc2626; }
+  #acct h2 { margin: 0; } #acct p { margin: 0; color: var(--muted); } #acct .stat { font-size: 18px; font-weight: 600; }
+  #acct button { padding: 14px; border: 0; border-radius: 12px; background: #4f46e5; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+  #dbg { position: absolute; inset: 0; z-index: 0; overflow: hidden; background-size: cover; background-position: center;
+         display: grid; place-items: start center; filter: blur(18px) brightness(.5); transform: scale(1.15); }
+  #dbg.plain { filter: none; transform: none; }
+  #dcard { position: relative; z-index: 1; text-shadow: 0 1px 8px rgba(0,0,0,.45); flex: 1; min-height: 0; border-radius: 0; padding: calc(env(safe-area-inset-top, 0px) + 84px) 24px calc(env(safe-area-inset-bottom, 0px) + 24px); color: #fff; display: flex;
+           flex-direction: column; gap: 16px; overflow-y: auto; }
+  #dcard h2 { margin: 0; font-size: clamp(26px, 8vw, 36px); line-height: 1.1; font-weight: 800; overflow-wrap: anywhere; }
+  .row { display: grid; gap: 2px; }
+  .row .k { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; opacity: .8; }
+  .row .v { font-size: 18px; font-weight: 700; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .row .v.plain { font-weight: 500; font-size: 16px; }
+  .eventLink { margin-top: auto; padding: 14px; border: 0; border-radius: 12px; background: #fff; color: #111; font: inherit;
+          font-weight: 700; cursor: pointer; }
+  .eventLink:disabled { opacity: .6; cursor: not-allowed; }
+  .back { align-self: flex-start; border: 0; background: none; color: var(--fg); font: inherit; font-weight: 600; padding: 4px 0 8px; cursor: pointer; }
+  section { flex: 1; min-height: 0; display: none; flex-direction: column; padding: calc(env(safe-area-inset-top, 0px) + 12px) 16px calc(env(safe-area-inset-bottom, 0px) + 16px); }
+  #feed, #details { padding: 0; }
+  section.active { display: flex; }
+
+  #stack { position: relative; flex: 1; min-height: 0; touch-action: none; }
+  .card { position: absolute; inset: 0; isolation: isolate; background: #222; text-shadow: 0 1px 8px rgba(0,0,0,.45); border-radius: 0; padding: calc(env(safe-area-inset-top, 0px) + 24px) 24px calc(env(safe-area-inset-bottom, 0px) + 104px); color: #fff; display: flex; flex-direction: column;
+          gap: 10px; user-select: none; -webkit-user-select: none; overflow: hidden; }
+  .card.top { cursor: grab; touch-action: none; }
+  .card.back { transform: scale(.95); opacity: .6; transition: transform .25s, opacity .25s; }
+  .card.fly { transition: transform .28s ease-out; }
+  .card.snap { transition: transform .3s cubic-bezier(.3,1.6,.5,1); }
+  .layers { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
+  .bg { position: absolute; inset: 0; background-size: cover; background-position: center; display: grid; place-items: start center; }
+  .blur { position: absolute; inset: 0; -webkit-backdrop-filter: blur(var(--b)); backdrop-filter: blur(var(--b));
+          -webkit-mask-image: linear-gradient(to bottom, transparent var(--s), #000 var(--e));
+          mask-image: linear-gradient(to bottom, transparent var(--s), #000 var(--e)); }
+  .b1 { --b: 3px;  --s: 28%; --e: 48%; }
+  .b2 { --b: 8px;  --s: 38%; --e: 62%; }
+  .b3 { --b: 18px; --s: 50%; --e: 78%; }
+  .b4 { --b: 32px; --s: 62%; --e: 94%; }
+  .scrim { position: absolute; inset: 0; background: linear-gradient(to bottom, transparent 40%, rgba(0,0,0,.5) 100%); }
+  .content { position: relative; z-index: 1; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+  .card.plain { text-shadow: none; }
+  .card.plain .blur, .card.plain .scrim { display: none; }
+  #photoPrev { width: 100%; max-height: 160px; object-fit: cover; border-radius: 10px; }
+  .chip { align-self: flex-start; font-size: 12px; font-weight: 700; letter-spacing: .04em; padding: 5px 10px;
+          border-radius: 99px; background: rgba(255,255,255,.25); }
+  .spacer { flex: 1; }
+  .card h2 { margin: 0; font-size: clamp(26px, 8vw, 36px); line-height: 1.1; font-weight: 800; overflow-wrap: anywhere; }
+  .meta { font-weight: 600; }
+  .desc { opacity: .95; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+  .stamp { position: absolute; z-index: 2; top: calc(env(safe-area-inset-top, 0px) + 84px); padding: 4px 12px; border-radius: 10px; background: rgba(255,255,255,.92);
+           font-size: 28px; font-weight: 800; opacity: 0; pointer-events: none; }
+  .stamp.skip { right: 24px; color: #dc2626; } .stamp.open { left: 24px; color: #16a34a; }
+
+  #empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; color: #fff; padding: 24px;
+           background: linear-gradient(135deg, #9ca3af, #4b5563); }
+  #empty h2 { margin: 8px 0; }
+
+  form { flex: 1; min-height: 0; overflow-y: auto; align-content: start; display: grid; gap: 16px; padding: 8px 0 24px; }
+  label { display: grid; gap: 6px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  input, select, textarea { font: 16px inherit; font-family: inherit; padding: 12px; border-radius: 10px; border: 1px solid var(--line);
+                            background: var(--field); color: var(--fg); width: 100%; text-transform: none; letter-spacing: 0; font-weight: 400; }
+  textarea { min-height: 110px; resize: vertical; }
+  .err { color: #dc2626; font-size: 12px; text-transform: none; letter-spacing: 0; font-weight: 400; min-height: 1em; }
+  form > button { padding: 14px; border: 0; border-radius: 12px; background: #4f46e5; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+  form > button:disabled { opacity: .45; cursor: not-allowed; }
+  #toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 88px); transform: translateX(-50%); background: #111; color: #fff; padding: 10px 16px;
+           border-radius: 10px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; text-align: center; }
+  #toast.show { opacity: 1; pointer-events: auto; } #toast a { color: #a5b4fc; }
+</style>
+</head>
+<body>
+<nav role="tablist">
+  <button role="tab" id="tabFeed" aria-selected="true">Discover</button>
+  <button role="tab" id="tabDetails" aria-selected="false">Details</button>
+</nav>
+
+<section id="feed" class="active">
+  <input id="searchBox" type="search" placeholder="Search events…" aria-label="Search events" hidden>
+  <div id="stack"></div>
+  <div class="bar" role="toolbar" aria-label="Navigation">
+    <button id="homeBtn" class="current" aria-label="Home" title="Home"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/></svg></button>
+    <button id="mapBtn" aria-label="Map" title="Map"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11a7 7 0 0114 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg></button>
+    <button id="searchBtn" aria-label="Search" title="Search"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button>
+    <button id="postBtn" aria-label="Post an event" title="Post an event"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+    <button id="acctBtn" aria-label="Account" title="Account"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg></button>
+  </div>
+</section>
+
+<section id="details"><div id="dbg"></div><div id="dcard"></div></section>
+
+<section id="post">
+  <button type="button" id="backBtn" class="back">‹ Back</button>
+  <form id="form" novalidate>
+    <label>Title <input id="title" required maxlength="80"></label>
+    <label>Date &amp; time <input id="date" type="datetime-local" required></label>
+    <label>Location <input id="location" required maxlength="100"></label>
+    <label>Category <select id="category"></select></label>
+    <label>Description <textarea id="descInput" maxlength="500"></textarea></label>
+    <label>Event photo <input id="photo" type="file" accept="image/*">
+      <img id="photoPrev" alt="Photo preview" hidden><span class="err" id="photoMsg"></span></label>
+    <label>Ticket price ($, optional) <input id="price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Leave blank if unknown"></label>
+    <label>Event website <input id="link" placeholder="example.com/tickets" inputmode="url" autocapitalize="off" autocomplete="off">
+      <span class="err" id="linkErr"></span></label>
+    <button id="submit" type="submit" disabled>Post event</button>
+  </form>
+</section>
+
+<section id="account">
+  <button type="button" id="acctBack" class="back">‹ Back</button>
+  <div id="acct"></div>
+</section>
+<section id="map">
+  <div id="gmap"></div>
+  <div id="mapFallback" hidden></div>
+  <div id="mapStatus" role="status" aria-live="polite">Map not loaded</div>
+  <button type="button" id="mapBack" class="mapBack">‹ Back</button>
+</section>
+<div id="toast" role="status"></div>
+
+<script>
+const MAPTILER_API_KEY = "";
+
+const CATEGORIES = {
+  "Music": ["#7c3aed", "#ec4899"], "Food & Drink": ["#f97316", "#dc2626"], "Sports": ["#16a34a", "#0d9488"],
+  "Arts": ["#4f46e5", "#7c3aed"], "Tech": ["#2563eb", "#06b6d4"], "Social": ["#ec4899", "#f97316"], "Other": ["#9ca3af", "#4b5563"]
+};
+const THRESHOLD = 110;
+
+// Shared events come from the backend; swipe history stays in this browser.
+const OWNER_STORAGE_KEY = "eventswipe.ownerKey.v1";
+function ownerKey() {
+  let key = localStorage.getItem(OWNER_STORAGE_KEY);
+  if (!key) { key = crypto.randomUUID() + "-" + crypto.randomUUID(); localStorage.setItem(OWNER_STORAGE_KEY, key); }
+  return key;
+}
+
+async function apiRequest(path, options = {}) {
+  let response;
+  try { response = await fetch(path, options); }
+  catch { throw new Error("Cannot reach the backend. Open this app at http://localhost:3001/ and start the backend server."); }
+  let data = null;
+  try { data = await response.json(); } catch {}
+  if (!response.ok) throw new Error(data?.error || "Server error (" + response.status + ")");
+  return data;
+}
+
+const store = {
+  events: [], seen: [], interested: [], mine: [],
+  async load() {
+    for (const field of ["seen", "interested", "mine"]) {
+      try { this[field] = JSON.parse(localStorage.getItem("eventswipe." + field + ".v2")) || []; }
+      catch { this[field] = []; }
+      if (!Array.isArray(this[field])) this[field] = [];
+    }
+    this.events = await apiRequest("/api/events");
+  },
+  save() {
+    try {
+      for (const field of ["seen", "interested", "mine"])
+        localStorage.setItem("eventswipe." + field + ".v2", JSON.stringify(this[field]));
+    } catch { toast(document.createTextNode("Could not save your swipe history in this browser.")); }
+  },
+  feed() {
+    const q = query.trim().toLowerCase();
+    return this.events
+      .filter(e => !this.seen.includes(e.id) && e.date > Date.now())
+      .filter(e => !q || [e.title, e.location, e.details, e.category].join(" ").toLowerCase().includes(q))
+      .sort((a, b) => a.date - b.date);
+  },
+  resetSeen() { this.seen = []; this.save(); },
+  restore(id) { this.seen = this.seen.filter(x => x !== id); this.interested = this.interested.filter(x => x !== id); this.save(); },
+  async remove(id) {
+    await apiRequest("/api/events/" + encodeURIComponent(id), {
+      method: "DELETE", headers: { "X-Owner-Key": ownerKey() }
+    });
+    this.events = this.events.filter(e => e.id !== id);
+    this.seen = this.seen.filter(x => x !== id);
+    this.interested = this.interested.filter(x => x !== id);
+    this.mine = this.mine.filter(x => x !== id);
+    this.save();
+  },
+  async add(e) {
+    const created = await apiRequest("/api/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Owner-Key": ownerKey() },
+      body: JSON.stringify(e)
+    });
+    this.events.push(created);
+    this.mine.push(created.id);
+    this.save();
+    return created;
+  },
+  markSeen(id, right) {
+    if (!this.seen.includes(id)) this.seen.push(id);
+    if (right && !this.interested.includes(id)) this.interested.push(id);
+    this.save();
+  }
+};
+
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+
+function toast(html) { const t = $("toast"); t.replaceChildren(); t.append(html); t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 5000); }
+
+// ---- Cards ----
+const IMG_OK = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/;
+
+// Uploaded photo if the event has one; otherwise the category color gradient. Returns true when a photo was applied.
+function applyBg(node, ev) {
+  node.replaceChildren(); node.style.backgroundImage = "";
+  if (ev && typeof ev.image === "string" && (IMG_OK.test(ev.image) || /^\/event-photos\/[A-Za-z0-9_-]+\.(?:webp|png|jpe?g|svg)$/.test(ev.image))) { node.style.backgroundImage = `url("${ev.image}")`; return true; }
+  const cat = ev && CATEGORIES[ev.category] ? ev.category : "Other";
+  node.style.backgroundImage = `linear-gradient(135deg, ${CATEGORIES[cat][0]}, ${CATEGORIES[cat][1]})`;
+  return false;
+}
+
+function makeCard(ev) {
+  const c = el("div", "card");
+  const layers = el("div", "layers"), bg = el("div", "bg");
+  if (!applyBg(bg, ev)) c.classList.add("plain");
+  // sharp photo on top, progressively stronger blur toward the title and down to the bottom of the screen
+  layers.append(bg, el("div", "blur b1"), el("div", "blur b2"), el("div", "blur b3"), el("div", "blur b4"), el("div", "scrim"));
+  const body = el("div", "content");
+  body.append(el("div", "spacer"), el("h2", "", ev.title),
+    el("div", "meta", "📅  " + new Date(ev.date).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })),
+    el("div", "meta", "📍  " + ev.location),
+    el("span", "chip", ev.category.toUpperCase()));
+  if (ev.details.trim()) body.append(el("div", "desc", ev.details));
+  c.append(layers, body, el("span", "stamp skip", "SKIP"), el("span", "stamp open", "OPEN"));
+  return c;
+}
+
+let topCard = null, topEvent = null, busy = false, moved = false, query = "";
+
+function render() {
+  const stack = $("stack"); stack.replaceChildren(); topCard = topEvent = null;
+  const feed = store.feed();
+  if (!feed.length) {
+    const e = el("div"); e.id = "empty";
+    const q = query.trim();
+    e.append(el("div", "", q ? "🔍" : "🎉"), el("h2", "", q ? "No matches" : "You're all caught up"),
+      el("div", "", q ? "Nothing found for “" + q + "”." : "Check back later or post an event."));
+    stack.append(e); return;
+  }
+  if (feed[1]) { const b = makeCard(feed[1]); b.classList.add("back"); stack.append(b); }
+  topEvent = feed[0]; topCard = makeCard(feed[0]); topCard.classList.add("top"); stack.append(topCard);
+  attachDrag(topCard);
+}
+
+function setPose(card, x, y) {
+  card.style.transform = `translate(${x}px, ${y * 0.2}px) rotate(${x / 20}deg)`;
+  card.querySelector(".stamp.skip").style.opacity = x < -30 ? Math.min(1, -x / THRESHOLD) : 0;
+  card.querySelector(".stamp.open").style.opacity = x > 30 ? Math.min(1, x / THRESHOLD) : 0;
+}
+
+function attachDrag(card) {
+  let sx = 0, sy = 0, dx = 0, dy = 0, dragging = false;
+  card.addEventListener("pointerdown", e => { if (busy) return; dragging = true; sx = e.clientX; sy = e.clientY; dx = dy = 0;
+    card.classList.remove("snap"); card.setPointerCapture(e.pointerId); });
+  card.addEventListener("pointermove", e => { if (!dragging) return; dx = e.clientX - sx; dy = e.clientY - sy; if (Math.abs(dx) + Math.abs(dy) > 8) moved = true; setPose(card, dx, dy); });
+  const end = () => {
+    if (!dragging) return; dragging = false;
+    if (dx > THRESHOLD) swipe(true); else if (dx < -THRESHOLD) swipe(false);
+    else { card.classList.add("snap"); setPose(card, 0, 0); }
+  };
+  card.addEventListener("pointerup", end);
+  card.addEventListener("pointercancel", () => { dragging = false; card.classList.add("snap"); setPose(card, 0, 0); });
+}
+
+function swipe(right) {
+  if (busy || !topCard) return;
+  busy = true;
+  const ev = topEvent, card = topCard;
+  if (right) {
+    // Open synchronously inside the user gesture so popup blockers allow it.
+    const w = window.open(ev.link, "_blank", "noopener");
+    if (!w) { const a = el("a", "", "Open " + new URL(ev.link).hostname); a.href = ev.link; a.target = "_blank"; a.rel = "noopener"; toast(a); }
+  }
+  card.classList.add("fly");
+  const back = $("stack").querySelector(".back"); if (back) { back.style.transform = "none"; back.style.opacity = 1; }
+  setPose(card, (right ? 1 : -1) * innerWidth * 1.2, 0);
+  card.querySelector(right ? ".stamp.open" : ".stamp.skip").style.opacity = 1;
+  setTimeout(() => { store.markSeen(ev.id, right); busy = false; render(); }, 280);
+}
+
+addEventListener("keydown", e => {
+  if (!$("feed").classList.contains("active") || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+  if (e.key === "ArrowRight") swipe(true); else if (e.key === "ArrowLeft") swipe(false);
+});
+
+// ---- Tabs ----
+const money = p => (+p > 0 ? "$" + (+p).toFixed(2) : "Free");
+
+function renderDetails() {
+  const d = $("dcard"); d.replaceChildren();
+  const ev = topEvent;
+  if (!ev) {
+    $("dbg").classList.add("plain"); applyBg($("dbg"), null);
+    d.append(el("h2", "", "No event to show"), el("div", "", "You're all caught up. Post an event using the + button on Discover."));
+    return;
+  }
+  $("dbg").classList.toggle("plain", !applyBg($("dbg"), ev));
+  const row = (k, v, plain) => { const r = el("div", "row"); r.append(el("span", "k", k), el("span", "v" + (plain ? " plain" : ""), v)); return r; };
+  d.append(el("h2", "", ev.title),
+    row("Date & time", new Date(ev.date).toLocaleString([], { dateStyle: "full", timeStyle: "short" })),
+    row("Location", ev.location));
+  if (ev.details.trim()) d.append(row("Description", ev.details, true));
+  if (ev.price != null && Number.isFinite(+ev.price)) d.append(row("Ticket price", money(ev.price)));
+  if (ev.source === "teammate-provided-events-csv")
+    d.append(row("Listing status", "Demo data — verify event details with ASU or the organizer", true));
+  if (ev.photoCredit) {
+    const creditRow = row("Photo credit", ev.photoCredit, true);
+    const src = safeEventUrl(ev.photoSource);
+    if (src) {
+      const creditLink = el("a", "", "Image source ↗");
+      creditLink.href = src;
+      creditLink.target = "_blank";
+      creditLink.rel = "noopener noreferrer";
+      creditRow.append(creditLink);
+    }
+    d.append(creditRow);
+  }
+  const href = safeEventUrl(ev.link);
+  if (href) {
+    const a = el("a", "eventLink", "View Event Website ↗");
+    a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
+    a.style.cssText = "display:block;text-align:center;text-shadow:none;text-decoration:none";
+    d.append(a);
+  }
+}
+
+// ---- Map page (MapTiler + MapLibre) ----
+const getKey = () => MAPTILER_API_KEY || (() => { try { return localStorage.getItem("maptiler.key.v1") || ""; } catch { return ""; } })();
+const upcoming = () => store.events.filter(e => e.date > Date.now()).sort((a, b) => a.date - b.date);
+let gmap = null, mapKeyUsed = "", gMarkers = [], mapRenderId = 0;
+const geoCache = (() => { try { return JSON.parse(localStorage.getItem("maptiler.geo.v1")) || {}; } catch { return {}; } })();
+
+function mapStatus(text) { $("mapStatus").textContent = text; }
+function clearMap() {
+  gMarkers.forEach(marker => marker.remove());
+  gMarkers = [];
+  if (gmap) gmap.remove();
+  gmap = null;
+  mapKeyUsed = "";
+}
+
+function showMapFallback(msg) {
+  const f = $("mapFallback"); f.hidden = false; f.replaceChildren();
+  f.append(el("h2", "", "Event Map"), el("p", "", msg));
+  const getKeyLink = el("a", "", "Get a free MapTiler API key ↗");
+  getKeyLink.href = "https://cloud.maptiler.com/account/keys/";
+  getKeyLink.target = "_blank"; getKeyLink.rel = "noopener";
+  f.append(getKeyLink);
+  const row = el("div", "keyrow"), inp = el("input"), save = el("button", "", "Use key");
+  inp.placeholder = "Paste MapTiler API key"; inp.autocomplete = "off"; inp.spellcheck = false;
+  save.type = "button";
+  save.onclick = () => {
+    const key = inp.value.trim(); if (!key) return;
+    try { localStorage.setItem("maptiler.key.v1", key); }
+    catch { mapStatus("Could not save key in this browser"); return; }
+    clearMap(); renderMap();
+  };
+  row.append(inp, save); f.append(row);
+  if (getKey()) {
+    const remove = el("button", "", "Remove saved key"); remove.type = "button";
+    remove.onclick = () => { try { localStorage.removeItem("maptiler.key.v1"); } catch {} clearMap(); renderMap(); };
+    f.append(remove);
+  }
+  f.append(el("p", "", "For testing, the key is saved in this browser only. A public website should use a key restricted to its website origin."));
+  mapStatus("Map unavailable");
+}
+
+function validCoordinates(e) {
+  const latRaw = e.lat ?? e.latitude, lngRaw = e.lng ?? e.lon ?? e.longitude;
+  if (latRaw == null || lngRaw == null || latRaw === "" || lngRaw === "") return null;
+  const lat = Number(latRaw), lng = Number(lngRaw);
+  return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? { lat, lng } : null;
+}
+
+async function geocodeLocation(address, key) {
+  if (!address || !address.trim()) return null;
+  const lookup = address.trim();
+  const cacheKey = lookup.toLowerCase();
+  if (geoCache[cacheKey]) return geoCache[cacheKey];
+  const query = /,|\b(Tempe|Phoenix|Mesa|Scottsdale|Arizona|AZ|USA)\b/i.test(lookup) ? lookup : lookup + ", Tempe, Arizona, USA";
+  const url = "https://api.maptiler.com/geocoding/" + encodeURIComponent(query) + ".json?key=" +
+    encodeURIComponent(key) + "&limit=1";
+  const response = await fetch(url);
+  if (response.status === 401 || response.status === 403) throw new Error("MapTiler rejected the API key or website origin (HTTP " + response.status + ").");
+  if (!response.ok) return null;
+  const data = await response.json();
+  const coords = data?.features?.[0]?.geometry?.coordinates;
+  if (!Array.isArray(coords) || coords.length < 2) return null;
+  const [lng, lat] = coords;
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+  geoCache[cacheKey] = { lat, lng };
+  try { localStorage.setItem("maptiler.geo.v1", JSON.stringify(geoCache)); } catch {}
+  return geoCache[cacheKey];
+}
+
+function safeEventUrl(raw) {
+  try { const u = new URL(raw); return ["https:", "http:"].includes(u.protocol) ? u.href : null; }
+  catch { return null; }
+}
+
+function popupNode(group) {
+  const root = el("div"); root.style.cssText = "color:#111;font:14px/1.45 system-ui,sans-serif;min-width:190px;max-width:250px";
+  const name = el("p", "", group.name); name.style.fontWeight = "700"; root.append(name);
+  for (const e of group.events) {
+    const info = el("p"), title = el("strong", "", e.title);
+    const when = el("div", "", new Date(e.date).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }));
+    info.append(title, when);
+    const href = safeEventUrl(e.link);
+    if (href) { const a = el("a", "", "View Event Website ↗"); a.href = href; a.target = "_blank"; a.rel = "noopener"; info.append(a); }
+    root.append(info);
+  }
+  const dir = el("a", "", "Directions ↗");
+  dir.href = "https://www.google.com/maps/dir/?api=1&destination=" + encodeURIComponent(group.name);
+  dir.target = "_blank"; dir.rel = "noopener";
+  root.append(dir);
+  return root;
+}
+
+async function renderMap() {
+  const renderId = ++mapRenderId;
+  const key = getKey();
+  if (!key) { clearMap(); showMapFallback("Paste a free MapTiler API key to load the real interactive map."); return; }
+  if (typeof maplibregl === "undefined") {
+    showMapFallback("MapLibre could not load. Check your internet connection or browser's blocked scripts.");
+    return;
+  }
+  $("mapFallback").hidden = true;
+  mapStatus("Loading ASU event locations…");
+  try {
+    if (!gmap || mapKeyUsed !== key) {
+      clearMap();
+      mapKeyUsed = key;
+      gmap = new maplibregl.Map({
+        container: "gmap",
+        style: "https://api.maptiler.com/maps/streets-v4/style.json?key=" + encodeURIComponent(key),
+        center: [-111.9343, 33.418],
+        zoom: 12.5
+      });
+      gmap.addControl(new maplibregl.NavigationControl(), "top-right");
+      gmap.on("error", event => {
+        if (!$("map").classList.contains("active")) return;
+        const message = String(event?.error?.message || "");
+        if (/401|403|unauthori|forbidden|access denied|api key/i.test(message)) {
+          showMapFallback("MapTiler could not load this map (possibly a key or allowed-origin restriction). Verify the API key and try again.");
+        } else {
+          mapStatus("Map load issue. Check the browser Console for details.");
+        }
+      });
+    }
+    gmap.resize();
+    gMarkers.forEach(marker => marker.remove()); gMarkers = [];
+    const groups = new Map();
+    for (const e of upcoming()) {
+      const pos = validCoordinates(e);
+      const groupKey = pos ? pos.lat.toFixed(5) + "," + pos.lng.toFixed(5) : String(e.location || "").trim().toLowerCase();
+      if (!groupKey) continue;
+      if (!groups.has(groupKey)) groups.set(groupKey, { name: e.location || "Event location", pos, events: [] });
+      groups.get(groupKey).events.push(e);
+    }
+    const missing = [], points = [];
+    for (const group of groups.values()) {
+      if (renderId !== mapRenderId) return;
+      const pos = group.pos || await geocodeLocation(group.name, key);
+      if (!pos) { missing.push(group.name); continue; }
+      const marker = new maplibregl.Marker({ color: "#4f46e5" })
+        .setLngLat([pos.lng, pos.lat])
+        .setPopup(new maplibregl.Popup({ offset: 25, maxWidth: "300px" }).setDOMContent(popupNode(group)))
+        .addTo(gmap);
+      gMarkers.push(marker);
+      points.push([pos.lng, pos.lat]);
+    }
+    if (renderId !== mapRenderId) return;
+    if (points.length === 1) gmap.flyTo({ center: points[0], zoom: 14.5 });
+    else if (points.length > 1) {
+      const bounds = new maplibregl.LngLatBounds(points[0], points[0]);
+      for (const point of points.slice(1)) bounds.extend(point);
+      gmap.fitBounds(bounds, { padding: 80, maxZoom: 15 });
+    }
+    const mapped = gMarkers.reduce((sum, marker) => sum + 1, 0);
+    mapStatus(mapped + " event location(s) on map" + (missing.length ? " · " + missing.length + " location(s) not found" : ""));
+    if (!mapped) mapStatus("No locations mapped. Use a precise address or lat/lng for each event.");
+    if (missing.length) console.info("Unmapped event locations:", missing);
+  } catch (err) {
+    console.error("Event map error:", err);
+    if (renderId === mapRenderId) showMapFallback("Could not load the event map: " + String(err?.message || err));
+  }
+}
+
+function renderAccount() {
+  const a = $("acct"); a.replaceChildren();
+  const btn = el("button", "", "Show all events again"); btn.type = "button";
+  btn.onclick = () => { store.resetSeen(); renderAccount(); toast(document.createTextNode("Events restored to feed")); };
+  a.append(el("h2", "", "Guest"),
+    el("p", "", "Shared event posts are on the server. Your interests are private to this browser; account login is not set up yet."),
+    el("div", "stat", "Events you posted: " + store.events.filter(e => store.mine.includes(e.id)).length),
+    el("div", "stat", "Events you've swiped: " + store.seen.length), btn);
+
+  a.append(el("h2", "", "Interested events"),
+    el("p", "", "Swiping right saves an event here. This does not mean you RSVP'd."));
+  const interestedEvents = store.events.filter(e => store.interested.includes(e.id) && e.date > Date.now());
+  if (!interestedEvents.length) a.append(el("p", "", "No interested events yet."));
+  for (const e of interestedEvents) {
+    const row = el("div", "mgRow"), info = el("span", "", e.title + " · " + new Date(e.date).toLocaleDateString());
+    const link = el("a", "", "Website ↗");
+    const url = safeEventUrl(e.link);
+    if (url) { link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer"; }
+    const undo = el("button", "", "Show again"); undo.type = "button";
+    undo.onclick = () => { store.restore(e.id); renderAccount(); };
+    row.append(info);
+    if (url) row.append(link);
+    row.append(undo); a.append(row);
+  }
+
+  a.append(el("h2", "", "Your posts"));
+  const myEvents = store.events.filter(e => store.mine.includes(e.id));
+  if (!myEvents.length) a.append(el("p", "", "You have not posted any events from this browser yet."));
+  for (const e of [...myEvents].sort((x, y) => x.date - y.date)) {
+    const row = el("div", "mgRow"), info = el("span", "", e.title + " · " + new Date(e.date).toLocaleDateString());
+    const del = el("button", "delete", "Delete"); del.type = "button";
+    del.onclick = async () => {
+      if (!confirm('Delete "' + e.title + '"? This cannot be undone.')) return;
+      del.disabled = true;
+      try { await store.remove(e.id); renderAccount(); toast(document.createTextNode("Event deleted.")); }
+      catch (err) { del.disabled = false; toast(document.createTextNode(err.message)); }
+    };
+    row.append(info, del); a.append(row);
+  }
+}
+
+function showTab(name) {
+  for (const n of ["feed", "details", "post", "account", "map"]) $(n).classList.toggle("active", n === name);
+  $("tabFeed").setAttribute("aria-selected", name === "feed");
+  $("tabDetails").setAttribute("aria-selected", name === "details");
+  document.body.classList.toggle("on-sub", name === "post" || name === "account" || name === "map");
+  if (name === "feed") render();
+  if (name === "details") renderDetails();
+  if (name === "account") renderAccount();
+  if (name === "map") renderMap();
+}
+$("tabFeed").onclick = () => showTab("feed");
+$("tabDetails").onclick = () => showTab("details");
+$("backBtn").onclick = () => showTab("feed");
+$("acctBack").onclick = () => showTab("feed");
+$("mapBack").onclick = () => showTab("feed");
+
+// Round button bar under the Discover cards
+$("homeBtn").onclick = () => { query = ""; $("searchBox").value = ""; $("searchBox").hidden = true; showTab("feed"); };
+$("mapBtn").onclick = () => showTab("map");
+$("searchBtn").onclick = () => {
+  const box = $("searchBox"); box.hidden = !box.hidden;
+  if (box.hidden) { box.value = ""; query = ""; render(); } else box.focus();
+};
+$("searchBox").addEventListener("input", e => { query = e.target.value; render(); });
+$("postBtn").onclick = () => showTab("post");
+$("acctBtn").onclick = () => showTab("account");
+
+// Clicking anywhere else flips between Discover and Details. Form fields, buttons, links and
+// swipe-drags are excluded so the app stays usable.
+document.addEventListener("pointerdown", () => { moved = false; }, true);
+document.addEventListener("click", e => {
+  if (moved || busy || e.target.closest("input, textarea, select, button, label, a, #map")) return;
+  showTab($("feed").classList.contains("active") ? "details" : "feed");
+});
+
+// ---- Post form ----
+Object.keys(CATEGORIES).forEach(c => $("category").append(new Option(c, c)));
+$("category").value = "Social";
+
+function defaultDate() {
+  const d = new Date(Date.now() + 36e5); d.setMinutes(0, 0, 0);
+  return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
+}
+$("date").value = defaultDate();
+
+let photoData = null;
+$("photo").addEventListener("change", async e => {
+  const f = e.target.files[0], msg = $("photoMsg"), prev = $("photoPrev");
+  photoData = null; prev.hidden = true; msg.textContent = "";
+  if (!f) return;
+  if (!f.type.startsWith("image/")) { msg.textContent = "Choose an image file."; e.target.value = ""; return; }
+  try {
+    const bmp = await createImageBitmap(f);
+    const k = Math.min(1, 1400 / Math.max(bmp.width, bmp.height));
+    const cv = document.createElement("canvas"); cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+    cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+    photoData = cv.toDataURL("image/jpeg", 0.8);
+    prev.src = photoData; prev.hidden = false;
+  } catch { msg.textContent = "Couldn't read that image. Try a JPG or PNG."; e.target.value = ""; }
+});
+
+function parseLink(raw) {
+  let s = raw.trim(); if (!s) return null;
+  if (!/^https?:\/\//i.test(s)) s = "https://" + s;
+  try { const u = new URL(s); return (u.protocol === "http:" || u.protocol === "https:") && u.hostname.includes(".") ? u.href : null; }
+  catch { return null; }
+}
+
+function validate() {
+  const link = parseLink($("link").value);
+  $("linkErr").textContent = $("link").value.trim() && !link ? "Enter a valid link" : "";
+  const p = $("price").value;
+  const numsOk = (p === "" || (Number.isFinite(+p) && +p >= 0));
+  const ok = $("title").value.trim() && $("location").value.trim() && $("date").value && link && numsOk;
+  $("submit").disabled = !ok; return ok ? link : null;
+}
+$("form").addEventListener("input", validate);
+
+$("form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const link = validate(); if (!link) return;
+  $("submit").disabled = true;
+  try {
+    await store.add({ title: $("title").value.trim(), date: new Date($("date").value).getTime(),
+      location: $("location").value.trim(), details: $("descInput").value, link, category: $("category").value,
+      price: $("price").value === "" ? null : +$("price").value, image: photoData || undefined });
+    photoData = null;
+    $("photoPrev").hidden = true;
+    $("photoMsg").textContent = "";
+    $("form").reset(); $("date").value = defaultDate(); $("category").value = "Social";
+    toast(document.createTextNode("Event posted to the shared server!"));
+    showTab("feed");
+  } catch (err) { toast(document.createTextNode(err.message)); }
+  validate();
+});
+
+$("stack").innerHTML = '<div id="empty"><h2>Loading events…</h2></div>';
+store.load().then(() => render()).catch(err => {
+  render(); toast(document.createTextNode(err.message));
+  console.error("Event API error:", err);
+});
+</script>
+</body>
+</html>
