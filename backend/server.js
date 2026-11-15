@@ -53,7 +53,12 @@ app.use((req, res, next) => {
       try {
         const expectedHost = req.get("host");
         const actual = new URL(origin);
-        if (actual.host !== expectedHost || (production && actual.protocol !== "https:"))
+        const configuredOrigins = (process.env.PUBLIC_SITE_ORIGIN || "")
+          .split(",")
+          .map(value => value.trim())
+          .filter(Boolean);
+        const allowedOrigin = actual.host === expectedHost || configuredOrigins.includes(actual.origin);
+        if (!allowedOrigin || (production && actual.protocol !== "https:"))
           return res.status(403).json({ error: "Request origin not allowed." });
       } catch { return res.status(403).json({ error: "Request origin not allowed." }); }
     }
