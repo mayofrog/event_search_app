@@ -5,6 +5,7 @@ const { randomUUID, randomBytes, createHash, scrypt: scryptCallback, timingSafeE
 const { promisify } = require("node:util");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { createSwipeStore, categoryScores, rankEvents } = require("./recommendations");
 
 const scrypt = promisify(scryptCallback);
 const app = express();
@@ -14,6 +15,7 @@ const dataFile = path.join(dataDir, "events.json");
 const authFile = path.join(dataDir, "auth.json");
 const interestsFile = path.join(dataDir, "interests.json");
 const publicDir = path.resolve(__dirname, "../public");
+const swipeStore = createSwipeStore({ dataDir });
 const categories = new Set([
   'Academics',
   'Sports',
@@ -307,23 +309,93 @@ app.get("/api/interests/mine", requireUser, async (req, res, next) => {
     res.json({ eventIds: records.map(item => item.eventId) });
   } catch (error) { next(error); }
 });
+// Sync any Likes saved before the recommendation feature was installed.
+// A conditional insert avoids replacing a newer swipe or double counting.
+async function swipesForUser(userId) {
+  let swipes = await swipeStore.list(userId);
+  const known = new Set(swipes.map(swipe => swipe.eventId));
+  const likedRecords = db
+    ? await interestsCollection.find({ userId }, { projection: { eventId: 1, _id: 0 } }).toArray()
+    : (await readInterests()).filter(item => item.userId === userId);
+  const missing = likedRecords.map(record => record.eventId).filter(id => !known.has(id));
+  if (missing.length) {
+    const events = new Map((await listEvents()).map(event => [event.id, event]));
+    for (const id of new Set(missing)) {
+      const event = events.get(id);
+      if (event && event.ownerUserId !== userId) await swipeStore.put(userId, event, "right", true);
+    }
+    swipes = await swipeStore.list(userId);
+  }
+  return swipes;
+}
+
+app.get("/api/recommendations/me", requireUser, async (req, res, next) => {
+  try {
+    const swipes = await swipesForUser(req.user.id);
+    res.json({ scores: categoryScores(swipes), swipes });
+  } catch (error) { next(error); }
+});
+
+// Passing an event records one negative vote in every selected category.
+app.post("/api/events/:id/pass", requireUser, async (req, res, next) => {
+  try {
+    const event = await findEventById(req.params.id);
+    if (!event) return res.status(404).json({ error: "Event not found." });
+    if (event.ownerUserId === req.user.id) return res.status(403).json({ error: "You cannot swipe on your own post." });
+    const alreadyInterested = db
+      ? await interestsCollection.findOne({ eventId: event.id, userId: req.user.id })
+      : (await readInterests()).some(item => item.eventId === event.id && item.userId === req.user.id);
+    if (alreadyInterested) return res.status(409).json({ error: "This event is already interested." });
+    const saved = await swipeStore.put(req.user.id, event, "left");
+    if (!saved) return res.status(409).json({ error: "This event was already swiped. Refresh Discover." });
+    res.json({ choice: "left", eventId: event.id });
+  } catch (error) { next(error); }
+});
+
+// Undo only undoes the most recent pass in the UI. Server validates the left vote.
+app.delete("/api/events/:id/pass", requireUser, async (req, res, next) => {
+  try {
+    const undone = await swipeStore.undo(req.user.id, req.params.id);
+    res.json({ undone });
+  } catch (error) { next(error); }
+});
+
 app.put("/api/events/:id/interest", requireUser, async (req, res, next) => {
   try {
     const eventId = req.params.id;
     const event = await findEventById(eventId);
     if (!event) return res.status(404).json({ error: "Event not found." });
     if (event.ownerUserId === req.user.id) return res.status(403).json({ error: "You cannot like your own post." });
+    let created = false;
     if (db) {
-      await interestsCollection.updateOne(
+      const result = await interestsCollection.updateOne(
         { eventId, userId: req.user.id },
         { $setOnInsert: { eventId, userId: req.user.id, createdAt: Date.now() } },
         { upsert: true }
       );
+      created = !!result.upsertedCount;
     } else {
-      await changeInterests(records => {
-        if (!records.some(record => record.eventId === eventId && record.userId === req.user.id))
-          records.push({ eventId, userId: req.user.id, createdAt: Date.now() });
+      created = await changeInterests(records => {
+        if (records.some(record => record.eventId === eventId && record.userId === req.user.id)) return false;
+        records.push({ eventId, userId: req.user.id, createdAt: Date.now() });
+        return true;
       });
+    }
+    try {
+      // One stored vote per user/event; retries cannot add duplicate score points.
+      await swipeStore.put(req.user.id, event, "right");
+    } catch (error) {
+      // Avoid counting a new Like if its preference vote could not be persisted.
+      if (created) {
+        try {
+          if (db) await interestsCollection.deleteOne({ eventId, userId: req.user.id });
+          else await changeInterests(records => {
+            const i = records.findIndex(r => r.eventId === eventId && r.userId === req.user.id);
+            if (i >= 0) records.splice(i, 1);
+          });
+        } catch (rollbackError) { console.error("Could not roll back interest:", rollbackError); }
+      }
+      throw error;
     }
     res.json({ interested: true, interestCount: await countInterest(eventId) });
   } catch (error) { next(error); }
@@ -331,18 +403,31 @@ app.put("/api/events/:id/interest", requireUser, async (req, res, next) => {
 app.delete("/api/events/:id/interest", requireUser, async (req, res, next) => {
   try {
     const eventId = req.params.id;
-    if (db) await interestsCollection.deleteOne({ eventId, userId: req.user.id });
-    else await changeInterests(records => {
-      for (let i = records.length - 1; i >= 0; i--)
-        if (records[i].eventId === eventId && records[i].userId === req.user.id) records.splice(i, 1);
-    });
+    const record = db
+      ? await interestsCollection.findOne({ eventId, userId: req.user.id })
+      : (await readInterests()).find(item => item.eventId === eventId && item.userId === req.user.id);
+    if (record) {
+      // Cancel removes the +1, but keeps the event hidden across devices.
+      const event = await findEventById(eventId);
+      if (event) await swipeStore.put(req.user.id, event, "cancelled");
+      if (db) await interestsCollection.deleteOne({ eventId, userId: req.user.id });
+      else await changeInterests(records => {
+        for (let i = records.length - 1; i >= 0; i--)
+          if (records[i].eventId === eventId && records[i].userId === req.user.id) records.splice(i, 1);
+      });
+    }
     res.json({ interested: false, interestCount: await countInterest(eventId) });
   } catch (error) { next(error); }
 });
 
-app.get("/api/health", (req, res) => res.json({ ok: true, storage: db ? "mongodb" : "local-file", auth: true }));
+app.get("/api/health", (req, res) => res.json({ ok: true, storage: db ? "mongodb" : "local-file", recommendations: swipeStore.mode, auth: true }));
 app.get("/api/events", requireUser, async (req, res, next) => {
-  try { res.json(await withInterestCounts((await listEvents()).filter(e => e.ownerUserId !== req.user.id))); }
+  try {
+    const swipes = await swipesForUser(req.user.id);
+    const scores = categoryScores(swipes);
+    const events = (await listEvents()).filter(e => e.ownerUserId !== req.user.id);
+    res.json(await withInterestCounts(rankEvents(events, scores)));
+  }
   catch (error) { next(error); }
 });
 app.get("/api/events/mine", requireUser, async (req, res, next) => {
@@ -461,6 +546,7 @@ async function main() {
   } else {
     console.log("Using local files (backend/data/events.json and auth.json). MongoDB not connected.");
   }
+  console.log("Recommendation storage:", swipeStore.mode);
   app.listen(port, "0.0.0.0", () => {
     console.log("EventSwipe: http://localhost:" + port);
     console.log("Health check: http://localhost:" + port + "/api/health");
